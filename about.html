@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+  <title>• NIMFILE •</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Material Icons Bolt Favicon -->
+  <link rel="icon" href="assets/favicon.png" type="image/png">
+  <link rel="stylesheet" href="style.css">
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+  <style>
+    .material-icons {
+      font-size: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="top-bar">
+    <div class="header-title">
+      <img src="assets/icon.png" alt="NIMFILE Icon" class="app-logo">
+      <span class="app-title">• NIMFILE •</span>
+    </div>
+  </div>
+  
+  <main class="centered-container">
+    <h1 class="visually-hidden">About NIMFILE - Secure File Transfer</h1>
+
+    <section class="card">
+      <h2>About NIMFILE</h2>
+      <p class="intro-text">NIMFILE is an open-source, privacy-focused platform for secure peer-to-peer file transfers directly between devices.</p>
+      
+      <div class="feature-section">
+        <h3>Key Features</h3>
+        <ul class="feature-list">
+          <li>
+            <span class="material-icons feature-icon">security</span>
+            <strong>End-to-End Encrypted:</strong> Files transfer directly between peers without intermediate servers
+          </li>
+          <li>
+            <span class="material-icons feature-icon">bolt</span>
+            <strong>Fast Transfers:</strong> Leverages WebRTC for optimal speed based on your connection
+          </li>
+          <li>
+            <span class="material-icons feature-icon">code</span>
+            <strong>Open Source:</strong> Transparent codebase licensed under MIT
+          </li>
+          <li>
+            <span class="material-icons feature-icon">devices</span>
+            <strong>Cross-Platform:</strong> Works on desktop and mobile browsers
+          </li>
+        </ul>
+      </div>
+
+      <div class="tech-section">
+        <h3>How It Works</h3>
+        <p>NIMFILE uses WebRTC technology to establish direct connections between devices:</p>
+        <ol class="process-steps">
+          <li>Host creates a transfer session and shares the link</li>
+          <li>Recipient joins using the shared link or QR code</li>
+          <li>Files transfer directly between devices with encryption</li>
+          <li>Connection closes automatically when complete</li>
+        </ol>
+      </div>
+
+      <div class="contact-section">
+        <h3>Contact & Support</h3>
+        <p>For feature requests, bug reports, or security concerns:</p>
+        <p class="contact-email">
+          <span class="material-icons">email</span>
+          Email: <a href="mailto:arunuserx@gmail.com">arunuserx@gmail.com</a>
+        </p>
+        <p>We welcome contributions from the open-source community!</p>
+      </div>
+    </section>
+  </main>
+
+  <div class="theme-button-wrapper">
+    <div class="left-placeholder"></div>
+    <button id="themeToggleBtn" title="Toggle theme" aria-label="Toggle theme" class="theme-toggle-btn">
+      <span class="theme-toggle-label">Light</span>
+      <span class="theme-toggle-switch">
+        <span class="switch-thumb"></span>
+      </span>
+      <span class="theme-toggle-label">Dark</span>
+    </button>
+  </div>
+  <script src="theme.js" defer></script>
+</body>
+</html>

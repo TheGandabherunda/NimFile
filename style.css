@@ -1,0 +1,954 @@
+/* ================================
+   PeerJS File Transfer - Minimal
+   ================================ */
+
+/* --- Variables --- */
+:root {
+  --font-family: -apple-system, BlinkMacMacSystemFont, 'Segoe UI', Arial, sans-serif;
+  --font-base: 14px;
+  --font-lg: 16px;
+  --font-sm: 12px;
+  --radius: 8px;
+  --transition: 0.2s ease;
+  
+  /* 8-unit spacing system */
+  --space-xxs: 4px;
+  --space-xs: 8px;
+  --space-sm: 16px;
+  --space-md: 24px;
+  --space-lg: 32px;
+  --space-xl: 40px;
+  
+  /* Layout */
+  --screen-margin: var(--space-sm);
+  --card-padding: var(--space-sm);
+  
+  /* Dark theme (default) */
+  --bg: #282828;
+  --bg-alt: #1e1e1e;
+  --surface: #333333;
+  --card: #1e1e1e;
+  --border: #3d3d3d;
+  --text: #F2F0EB;
+  --text-secondary: #b3b1ad;
+  --text-muted: #d1cfcb;
+  --btn-bg: #333333;
+  --btn-hover: #424242;
+  --input-bg: #1e1e1e;
+  --progress-bg: #333333;
+   --status-connected: #4CAF50; /* Green */
+  --status-disconnected: #F44336; /* Red */
+}
+
+/* Light theme */
+.light-theme {
+  --bg: #F2F0EB;
+  --bg-alt: #e8e6e1;
+  --surface: #ffffff;
+  --card: #e8e6e1;
+  --border: #d6d4cf;
+  --text: #282828;
+  --text-secondary: #5a5a5a;
+  --text-muted: #7a7a7a;
+  --btn-bg: #ffffff;
+  --btn-hover: #f0eeea;
+  --input-bg: #ffffff;
+  --progress-bg: #e8e6e1;
+   --status-connected: #2E7D32; /* Darker green */
+  --status-disconnected: #C62828; /* Darker red */
+}
+
+/* --- Base Styles --- */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+  font-family: var(--font-family);
+  font-size: var(--font-base);
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  transition: background var(--transition), color var(--transition);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--screen-margin);
+  text-align: center;
+}
+
+/* --- Layout --- */
+.top-bar {
+  width: 100%;
+  max-width: 512px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: var(--space-xs) var(--space-sm);
+  margin: 0 auto var(--space-sm);
+}
+
+.header-title {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-xxs);
+  text-align: center;
+}
+
+.app-icon {
+  font-size: var(--space-lg);
+  color: var(--accent);
+}
+
+.app-title {
+  font-size: var(--font-sm);
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: 0.5px;
+}
+
+.theme-button-wrapper {
+  width: 100%;
+  max-width: 512px;
+  margin: 0 auto var(--space-sm);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 var(--space-sm);
+  gap: var(--space-lg);
+}
+
+.text-buttons-container { /* Changed from .text-button-group to .text-buttons-container based on index.html */
+  display: flex;
+  gap: var(--space-sm);
+  justify-content: center;
+}
+
+/* --- Buttons --- */
+button {
+  font-family: inherit;
+  font-size: var(--font-base);
+  border-radius: var(--radius);
+  border: none;
+  outline: none;
+  transition: all var(--transition);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.primary-btn {
+  background: var(--text);
+  color: var(--bg);
+  padding: var(--space-xs) var(--space-md);
+  font-weight: 500;
+  height: 36px;
+  min-width: 100px;
+  margin: var(--space-sm) auto;
+  border: 1px solid var(--border);
+}
+
+.primary-btn:hover {
+  background: var(--btn-hover);
+  color: var(--text);
+}
+
+.primary-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.icon-btn {
+  background: var(--btn-bg);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  padding: var(--space-xs);
+  border-radius: var(--radius);
+  width: 32px;
+  height: 32px;
+  margin-left: auto;
+}
+
+.icon-btn:hover {
+  background: var(--btn-hover);
+  color: var(--text);
+  border-color: var(--text);
+}
+
+.text-button {
+  text-decoration: none;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: var(--font-sm);
+  cursor: pointer;
+  padding: var(--space-xxs) var(--space-xs);
+  height: 28px;
+  min-width: 60px;
+  text-align: center;
+  border-radius: var(--radius);
+}
+
+.text-button:hover {
+  color: var(--text);
+}
+
+.theme-toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: var(--space-xxs) var(--space-xs);
+  height: 28px;
+  border-radius: var(--radius);
+}
+
+.theme-toggle-switch {
+  width: var(--space-lg);
+  height: var(--space-sm);
+  background: var(--btn-bg);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  position: relative;
+}
+
+.switch-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text);
+  position: absolute;
+  top: 1px;
+  left: 2px;
+  transition: left var(--transition);
+}
+
+.theme-toggle-btn.dark .switch-thumb {
+  left: var(--space-sm);
+}
+
+.theme-toggle-label {
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.back-button {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: var(--font-base);
+  cursor: pointer;
+  padding: var(--space-xxs) 0;
+  height: 28px;
+  margin: 0 auto var(--space-sm);
+  justify-content: center;
+  border-radius: var(--radius);
+}
+
+.back-button:hover {
+  opacity: 0.8;
+}
+
+main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 0 var(--space-sm);
+  width: 100%;
+  max-width: 512px;
+  margin: 0 auto;
+  text-align: center;
+}
+
+/* --- Cards --- */
+.card {
+  background: var(--card);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  padding: var(--card-padding);
+  margin-bottom: var(--space-sm);
+  width: 100%;
+  text-align: center;
+}
+
+/* --- Inputs --- */
+input[type="text"] {
+  font-size: var(--font-base);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--input-bg);
+  color: var(--text);
+  font-family: inherit;
+  outline: none;
+  transition: border var(--transition);
+  width: 100%;
+  height: 36px;
+  margin: 0 auto var(--space-sm);
+  display: block;
+  max-width: 400px;
+  text-align: center;
+}
+
+input[type="text"]:focus {
+  border-color: var(--text);
+}
+
+label {
+  font-size: var(--font-base);
+  color: var(--text-secondary);
+  margin-bottom: var(--space-xs);
+  display: block;
+  text-align: center;
+}
+
+/* --- Specific Components --- */
+.join-link-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  background: var(--bg-alt);
+  border-radius: var(--radius);
+  padding: var(--space-xs) var(--space-sm);
+  margin: 0 auto var(--space-sm);
+  height: 36px;
+  max-width: 400px;
+  width: 100%;
+}
+
+#joinLink {
+  color: var(--text);
+  text-decoration: none;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-sm);
+  text-align: center;
+  min-width: 0; /* Allow the link to shrink */
+}
+
+.qr-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  margin: var(--space-sm) auto;
+  padding: var(--space-xs);
+}
+
+.qr-label {
+  margin-bottom: var(--space-sm);
+}
+
+#qrcode {
+  background: #ffffff;
+  border-radius: var(--radius);
+  padding: var(--space-xs);
+  margin: 0 auto var(--space-sm);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 160px;
+  height: 160px;
+  box-sizing: border-box;
+}
+
+#qrcode canvas,
+#qrcode img {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  display: block;
+}
+
+.qr-text {
+  margin-top: var(--space-xs);
+  color: var(--text-secondary);
+  font-size: var(--font-sm);
+  text-align: center;
+  width: 100%;
+  padding: 0 var(--space-xs);
+}
+
+.peers-section {
+  margin-top: var(--space-sm);
+}
+
+.peers-section strong {
+  display: block;
+  margin-bottom: var(--space-xs);
+}
+
+#peersList {
+  list-style: none;
+  padding: 0;
+  margin: 0 auto;
+  max-height: 160px;
+  overflow-y: auto;
+  width: 100%;
+  max-width: 400px;
+}
+
+#peersList li {
+  padding: var(--space-xs) 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  height: var(--space-md);
+  text-align: center;
+}
+
+.peer-color-dot {
+  display: none;
+}
+
+.peer-username {
+  font-weight: 500;
+  color: var(--text);
+  font-size: var(--font-sm);
+  text-align: center;
+}
+
+.peer-status {
+  font-size: var(--font-sm);
+  margin-left: auto;
+  text-align: right;
+}
+
+.peer-status.connected {
+  color: var(--status-connected);
+}
+
+.peer-status.connecting {
+  color: orange; /* Added for connecting status */
+}
+
+.peer-status.disconnected {
+  color: var(--status-disconnected);
+}
+
+.peer-status.session_ended {
+  color: var(--status-disconnected); /* Use disconnected color for session ended */
+}
+
+.message-tile.file {
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: var(--space-sm);
+  margin: var(--space-xs) auto;
+  animation: fadeIn 0.3s ease;
+  max-width: 400px;
+  width: 100%;
+  text-align: center;
+  border: 1px solid var(--border);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.file-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  margin-top: var(--space-xs);
+  flex-wrap: wrap;
+}
+
+.file-icon {
+  font-size: 20px;
+  color: var(--text);
+}
+
+.file-name {
+  font-weight: 500;
+  color: var(--text);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-sm);
+  text-align: center;
+}
+
+.file-size {
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.file-progress-bar {
+  width: 100%;
+  background: var(--progress-bg);
+  border-radius: 2px;
+  height: 4px;
+  margin: var(--space-xs) 0;
+  overflow: hidden;
+}
+
+.file-progress-bar-inner {
+  background: var(--text);
+  height: 100%;
+  border-radius: 2px;
+  width: 0;
+  transition: width var(--transition);
+}
+
+.file-status-msg {
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
+  text-align: center;
+  margin-top: var(--space-xs);
+}
+
+/* --- Username Form --- */
+.username-section form {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  width: 100%;
+  max-width: 400px;
+  margin: 0 auto;
+}
+
+.username-section input[type="text"] {
+  margin: 0;
+  flex: 1;
+}
+
+.set-username-btn {
+  margin: 0;
+  min-width: 80px;
+}
+
+/* --- Utility --- */
+.hidden {
+  display: none !important;
+}
+
+.visually-hidden {
+  position: absolute;
+  left: -10000px;
+}
+
+/* --- Scrollbar --- */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--surface);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::selection {
+  background: var(--text);
+  color: var(--bg);
+}
+
+/* ================================
+   RESPONSIVE BREAKPOINTS
+   ================================ */
+
+@media (max-width: 768px) {
+  :root {
+    --screen-margin: 12px;
+    --card-padding: 12px;
+  }
+  
+  .top-bar {
+    padding: 6px 12px;
+  }
+  
+  .theme-button-wrapper {
+    padding: 0 12px;
+    gap: var(--space-md);
+  }
+  
+  main {
+    padding: 0 12px;
+  }
+  
+  .file-name {
+    max-width: 120px;
+  }
+
+  .username-section form {
+    flex-direction: column;
+    gap: var(--space-xs);
+  }
+
+  .username-section input[type="text"] {
+    width: 100%;
+  }
+
+  .set-username-btn {
+    width: 100%;
+  }
+}
+
+@media (max-width: 480px) {
+  :root {
+    --screen-margin: 8px;
+    --card-padding: 8px;
+  }
+  
+  .top-bar {
+    padding: 4px 8px;
+  }
+  
+  .theme-button-wrapper {
+    padding: 0 8px;
+    flex-direction: column;
+    gap: var(--space-xs);
+    align-items: center;
+  }
+  
+  main {
+    padding: 0 8px;
+  }
+  
+  .primary-btn {
+    padding: 6px 12px;
+    font-size: var(--font-sm);
+    min-width: 90px;
+    height: 30px;
+  }
+  
+  .file-meta-row {
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+  
+  .file-name {
+    max-width: 96px;
+  }
+  
+  .join-link-row {
+    /* Removed flex-direction: column; */
+    gap: var(--space-xs); /* Adjusted gap for better spacing */
+    height: auto;
+    padding: 8px;
+  }
+  
+  .text-buttons-container { /* Changed from .text-button-group to .text-buttons-container based on index.html */
+    flex-direction: column;
+    gap: 4px;
+  }
+  
+  #peersList {
+    max-height: 120px;
+  }
+  
+  #qrcode {
+    width: 128px;
+    height: 128px;
+  }
+}
+
+
+/* ================================
+   About & Terms Page Specific Styles
+   ================================ */
+
+/* Card and main content adjustments - keep default card centering, but adjust padding */
+main.centered-container .card {
+  padding: var(--space-md); /* Keep padding adjustment */
+}
+
+/* Align main H2 headings to the center on About/Terms pages */
+main.centered-container .card h2 {
+  text-align: center;
+  margin-bottom: var(--space-lg); /* Increased space below main heading */
+  color: var(--text); /* Main heading remains strong */
+}
+
+/* Align all other headings (H3) and text content to the left */
+main.centered-container .card h3 {
+  text-align: left;
+  margin-top: var(--space-lg); /* Increased space above subheadings */
+  margin-bottom: var(--space-sm); /* Space below subheadings */
+  color: var(--text); /* Subheadings remain strong */
+}
+
+.intro-text {
+  text-align: left;
+  margin-bottom: var(--space-md); /* Space below intro text */
+  color: var(--text-secondary); /* Softer shade for intro text */
+}
+
+.last-updated {
+  text-align: left;
+  margin-bottom: var(--space-md); /* Space below last updated */
+  color: var(--text-muted); /* Even softer shade for last updated */
+}
+
+.tech-section p,
+.contact-section p,
+.terms-section p {
+  text-align: left;
+  margin-bottom: var(--space-sm); /* Space below general paragraphs */
+  color: var(--text-secondary); /* Softer shade for general paragraphs */
+}
+
+/* List items should also be left-aligned */
+.process-steps,
+.terms-section ul {
+  text-align: left; /* This will align the list items */
+  margin-bottom: var(--space-md); /* Space below lists */
+  padding-left: var(--space-md); /* Ensure consistent indentation for the list container */
+}
+
+.process-steps li,
+.terms-section li {
+  color: var(--text-secondary); /* Softer shade for list item text */
+  margin-bottom: var(--space-xs); /* Reduced space between list items */
+  line-height: 1.6;
+  padding-left: 0; /* Removed conflicting padding from list items */
+}
+
+
+/* Feature list improvements */
+.feature-list {
+  list-style: none;
+  padding: 0;
+  margin: var(--space-md) 0;
+  display: grid; /* Use grid for symmetric layout */
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); /* Responsive columns */
+  gap: var(--space-sm); /* Gap between tiles */
+}
+
+.feature-list li {
+  display: flex;
+  flex-direction: column; /* Stack icon, strong, and p */
+  align-items: flex-start; /* Align content to the left within the tile */
+  text-align: left; /* Align text to the left within the tile */
+  gap: var(--space-xs); /* Space between icon, heading, and description */
+  padding: var(--space-md); /* More padding for a better tile look */
+  background: var(--surface);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  height: auto; /* Allow height to adjust */
+}
+
+.feature-list li strong {
+  margin-top: var(--space-xxs); /* Small space between icon and heading */
+  display: block; /* Ensure strong takes full width for proper text alignment */
+  color: var(--text); /* Feature titles remain strong */
+}
+
+.feature-list li p {
+  font-size: var(--font-sm);
+  color: var(--text-secondary); /* Feature descriptions use a softer shade */
+}
+
+.feature-icon {
+  font-size: 28px; /* Slightly larger icons for features */
+  color: var(--text); /* Feature icons remain prominent */
+  margin-top: 0; /* Reset margin-top, flexbox handles alignment */
+}
+
+/* Contact section improvements */
+.contact-section {
+  margin-top: var(--space-lg);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--border);
+}
+
+.contact-email {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin: var(--space-md) 0;
+}
+
+.contact-email .material-icons {
+  margin-right: var(--space-xxs); /* Small space to the right of the icon */
+  vertical-align: middle;
+  color: var(--text-secondary); /* Softer shade for contact email icon */
+}
+
+.contact-email a {
+  color: var(--text-secondary); /* Softer shade for email link */
+  text-decoration: none; /* Ensure no underline */
+}
+
+.contact-email a:hover {
+  color: var(--text); /* Darker on hover */
+}
+
+/* Terms section specific improvements */
+.terms-section {
+  margin-bottom: var(--space-lg);
+}
+
+.terms-section ul {
+  list-style-position: outside;
+  padding-left: var(--space-md);
+  margin: var(--space-sm) 0;
+}
+
+/* Icon consistency */
+.material-icons {
+  vertical-align: middle;
+  font-size: 20px; /* Default size */
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  main.centered-container .card {
+    padding: var(--space-sm);
+  }
+  
+  .feature-list {
+    grid-template-columns: 1fr; /* Single column on smaller screens */
+  }
+  .feature-list li {
+    padding: var(--space-sm);
+  }
+  
+  .process-steps,
+  .terms-section ul {
+    padding-left: var(--space-sm);
+  }
+}
+
+@media (max-width: 480px) {
+  .feature-list li {
+    align-items: flex-start; /* Revert to flex-start for small screens if content is long */
+    text-align: left; /* Align text left on small screens */
+  }
+  
+  .contact-email {
+    flex-direction: row;
+    align-items: center;
+  }
+}
+
+
+.session-info-card {
+  position: relative;
+  padding: 0;
+  overflow: hidden;
+  /* Add border-radius here */
+  border-radius: var(--radius); /* Apply the global radius variable */
+}
+
+.collapsible-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--space-sm);
+  cursor: pointer;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  /* Apply top border-radius to header */
+  border-radius: var(--radius);
+}
+
+.peer-info {
+  font-size: var(--font-sm);
+  color: var(--text);
+}
+
+.peer-info span {
+  font-weight: 500;
+}
+
+.collapsible-content {
+  padding: var(--space-sm);
+  max-height: 500px; /* A large enough value for expanded state */
+  overflow: hidden; /* Hide overflow during transition */
+  transition: max-height 0.3s ease-out, padding 0.3s ease-out; /* Smooth transition for height and padding */
+}
+
+.session-info-card.collapsed .collapsible-content {
+  max-height: 0; /* Collapse to 0 height */
+  padding-top: 0; /* Remove padding when collapsed */
+  padding-bottom: 0; /* Remove padding when collapsed */
+}
+
+#toggleSessionInfoBtn .material-icons {
+  transition: transform 0.3s ease;
+}
+
+.session-info-card.collapsed #toggleSessionInfoBtn .material-icons {
+  transform: rotate(180deg);
+}
+
+.session-info-card:not(.collapsed) #toggleSessionInfoBtn .material-icons {
+  transform: rotate(0deg);
+}
+
+/* Adjust existing styles to accommodate new layout */
+.session-details {
+  margin-top: 0;
+}
+
+.join-link-row {
+  margin-top: 0;
+}
+
+/* Lottie Animation Container Styles */
+.lottie-animation-container {
+  position: fixed; /* Fixed position to cover the entire viewport */
+  top: 0;
+  left: 0;
+  width: 100vw; /* Full viewport width */
+  height: 100vh; /* Full viewport height */
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  /* Removed background-color to eliminate the overlay appearance */
+  z-index: 9999; /* Ensure it's on top of other content */
+  pointer-events: none; /* Allow clicks to pass through when hidden */
+  opacity: 0; /* Start hidden */
+  transition: opacity 0.3s ease-in-out; /* Smooth fade in/out */
+}
+
+.lottie-animation-container.visible {
+  opacity: 1; /* Fade in when visible */
+  /* pointer-events: auto; is intentionally removed to allow clicks to pass through */
+}
+
+/* Ensure Lottie animation itself scales within the container */
+.lottie-animation-container > div {
+  width: 100%;
+  height: 100%;
+  max-width: 300px; /* Adjust max size for animation if needed */
+  max-height: 300px; /* Adjust max size for animation if needed */
+}
+
+@media (max-width: 768px) {
+  .lottie-animation-container > div {
+    max-width: 200px; /* Smaller on mobile */
+    max-height: 200px;
+  }
+}
