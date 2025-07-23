@@ -33,6 +33,6 @@ No installation required! Simply visit the [live website](https://projectsolutus
 For local development:
 
 ```bash
-git clone https://github.com/ProjectSolutus/nimfile.git
+git clone https://github.com/ProjectSolutus/NimFile.git
 cd nimfile
 # Open index.html in your browser
