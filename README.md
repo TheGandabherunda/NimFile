@@ -28,7 +28,7 @@ NIMFILE is an open-source, privacy-focused platform for secure peer-to-peer file
 
 ## Installation
 
-No installation required! Simply visit the [live website](https://projectsolutus.github.io/Nimfile/) to start using NIMFILE.
+No installation required! Simply visit the [live website](https://projectsolutus.github.io/NimFile/) to start using NIMFILE.
 
 For local development:
 
