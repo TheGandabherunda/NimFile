@@ -1387,5 +1387,17 @@ if (copyLinkBtn && joinLinkA) {
 // Initial render of file transfer history on load
 document.addEventListener('DOMContentLoaded', () => {
   renderFileTransferHistory();
-});
 
+  // Register the service worker for PWA offline capabilities
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/service-worker.js')
+        .then(registration => {
+          console.log('Service Worker registered with scope:', registration.scope);
+        })
+        .catch(err => {
+          console.error('Service Worker registration failed:', err);
+        });
+    });
+  }
+});

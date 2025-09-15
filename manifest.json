@@ -1,0 +1,29 @@
+{
+  "name": "NimFile",
+  "short_name": "NimFile",
+  "description": "Secure Peer-to-Peer File Transfer using WebRTC.",
+  "dir": "ltr",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "scope": "/",
+  "start_url": "/",
+  "background_color": "#282828",
+  "theme_color": "#282828",
+  "icons": [
+    {
+      "src": "assets/icon-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "assets/icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ],
+  "categories": [
+    "utilities"
+  ]
+}
