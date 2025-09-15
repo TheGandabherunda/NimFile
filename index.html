@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
+  <meta charset="UTF-8">
   <title>• NIMFILE •</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <!-- Material Icons Bolt Favicon -->
@@ -15,97 +15,91 @@
   </style>
 </head>
 <body>
-  <!-- Lottie Animation Container - Full screen, in foreground -->
-  <div id="lottie-animation-container" class="lottie-animation-container hidden"></div>
+<!-- This overlay is used for the connection status animations -->
+<div id="connection-status-overlay"></div>
 
-  <div class="top-bar">
-    <div class="header-title">
-      <!-- Icon added above the title -->
-      <img src="assets/icon.png" alt="NIMFILE Icon" class="app-logo">
-      <span class="app-title">• NIMFILE •</span>
-    </div>
+<div class="top-bar">
+  <div class="header-title">
+    <!-- Icon added above the title -->
+    <img src="assets/icon.png" alt="NIMFILE Icon" class="app-logo">
+    <span class="app-title">• NIMFILE •</span>
   </div>
-  <main class="centered-container">
-    <h1 class="visually-hidden">NIMFILE Application</h1>
+</div>
+<main class="centered-container">
+  <h1 class="visually-hidden">NIMFILE Application</h1>
 
-    <!-- Initial Start Session View -->
-    <section id="startSection" class="card start-session-card">
-      <button id="startBtn" class="primary-btn">Start sharing</button>
-    </section>
-
-    <!-- Session Info & Peer Management (initially hidden) -->
-    <section id="sessionInfoSection" class="hidden card session-info-card">
-      <div class="collapsible-header" id="sessionInfoHeader">
-        <span class="peer-info">Connected to: <span id="connectedPeerName">-</span></span>
-        <button id="toggleSessionInfoBtn" title="Toggle session info" aria-label="Toggle session info" class="icon-btn">
-          <span class="material-icons">expand_less</span>
-        </button>
-      </div>
-      <div class="collapsible-content" id="sessionInfoContent">
-        <div class="session-details">
-          <div id="linkSection" class="hidden join-link-row">
-            <strong>Share this link:</strong>
-            <a href="#" id="joinLink" target="_blank" class="join-link"></a>
-            <button id="copyLinkBtn" title="Copy link" aria-label="Copy link" class="icon-btn">
-              <span class="material-icons">content_copy</span>
-            </button>
-          </div>
-          <div class="qr-container hidden" id="qrContainer">
-            <span class="qr-label">Or scan this code:</span>
-            <div id="qrcode"></div>
-          </div>
-        </div>
-        <div id="usernameSection" class="hidden username-section">
-          <form id="usernameForm" autocomplete="off">
-            <label for="usernameInput"><strong>Your name:</strong></label>
-            <input id="usernameInput" type="text" maxlength="20" placeholder="Your name" />
-            <button type="submit" class="primary-btn set-username-btn">Save</button>
-          </form>
-        </div>
-        <div id="peersSection" class="hidden peers-section">
-          <strong>Connected Peers:</strong>
-          <ul id="peersList"></ul>
-        </div>
-      </div>
-    </section>
-
-    <!-- File Transfer Controls (initially hidden, shown after connection) -->
-    <section id="fileTransferSection" class="hidden card file-transfer-card">
-      <h2>Send files</h2>
-      <div class="file-input-area">
-        <input id="fileInput" type="file" style="display:none" />
-        <button id="fileBtn" type="button" class="primary-btn send-file-btn">
-          <span class="material-icons" style="margin-right: 8px;">upload</span> Choose files
-        </button>
-      </div>
-      <div id="fileMessagesArea" class="file-messages-area">
-        <!-- File messages will be appended here -->
-      </div>
-    </section>
-  </main>
-
-  <div class="theme-button-wrapper">
-    <!-- Add this inside the theme-button-wrapper div, before the theme toggle button -->
-    <div class="text-buttons-container">
-      <a href="terms.html" target="_blank" class="text-button">Terms & Conditions</a>
-      <span class="text-button-separator">•</span>
-      <a href="about.html" target="_blank" class="text-button">About</a>
+  <!-- Session Info & Peer Management (initially hidden) -->
+  <section id="sessionInfoSection" class="hidden card session-info-card">
+    <div class="collapsible-header" id="sessionInfoHeader">
+      <span class="peer-info">Connected to: <span id="connectedPeerName">-</span></span>
+      <button id="toggleSessionInfoBtn" title="Toggle session info" aria-label="Toggle session info" class="icon-btn">
+        <span class="material-icons">expand_less</span>
+      </button>
     </div>
-    <button id="themeToggleBtn" title="Toggle theme" aria-label="Toggle theme" class="theme-toggle-btn">
-      <span class="theme-toggle-label">Light</span>
-      <span class="theme-toggle-switch">
+    <div class="collapsible-content" id="sessionInfoContent">
+      <div class="session-details">
+        <div id="linkSection" class="hidden join-link-row">
+          <strong>Share this link:</strong>
+          <a href="#" id="joinLink" target="_blank" class="join-link"></a>
+          <button id="copyLinkBtn" title="Copy link" aria-label="Copy link" class="icon-btn">
+            <span class="material-icons">content_copy</span>
+          </button>
+        </div>
+        <div class="qr-container hidden" id="qrContainer">
+          <span class="qr-label">Or scan this code:</span>
+          <div id="qrcode"></div>
+        </div>
+      </div>
+      <div id="usernameSection" class="hidden username-section">
+        <form id="usernameForm" autocomplete="off">
+          <label for="usernameInput"><strong>Your name:</strong></label>
+          <input id="usernameInput" type="text" maxlength="20" placeholder="Your name" />
+          <button type="submit" class="primary-btn set-username-btn">Save</button>
+        </form>
+      </div>
+      <div id="peersSection" class="hidden peers-section">
+        <strong>Connected Peers:</strong>
+        <ul id="peersList"></ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- File Transfer Controls (now visible by default) -->
+  <section id="fileTransferSection" class="card file-transfer-card">
+    <h2>Share Files</h2>
+    <div class="file-input-area">
+      <input id="fileInput" type="file" multiple style="display:none" />
+      <button id="fileBtn" type="button" class="primary-btn send-file-btn">
+        <span class="material-icons" style="margin-right: 8px;">upload</span> Choose files
+      </button>
+    </div>
+    <div id="fileMessagesArea" class="file-messages-area"  style="width: 100%;"></div>
+    <!-- Start button is now here, initially hidden -->
+    <button id="startBtn" class="primary-btn hidden" style="margin-top: 16px; width: 100%;">Start Session</button>
+  </section>
+</main>
+
+<div class="theme-button-wrapper">
+  <!-- Add this inside the theme-button-wrapper div, before the theme toggle button -->
+  <div class="text-buttons-container">
+    <a href="terms.html" target="_blank" class="text-button">Terms & Conditions</a>
+    <span class="text-button-separator">•</span>
+    <a href="about.html" target="_blank" class="text-button">About</a>
+  </div>
+  <button id="themeToggleBtn" title="Toggle theme" aria-label="Toggle theme" class="theme-toggle-btn">
+    <span class="theme-toggle-label">Light</span>
+    <span class="theme-toggle-switch">
         <span class="switch-thumb"></span>
       </span>
-      <span class="theme-toggle-label">Dark</span>
-    </button>
-  </div>
+    <span class="theme-toggle-label">Dark</span>
+  </button>
+</div>
 
-  <script src="https://cdn.jsdelivr.net/npm/web-streams-polyfill@2.0.2/dist/ponyfill.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/streamsaver@2.0.3/StreamSaver.min.js"></script>
-  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/lottie-web/5.10.0/lottie.min.js"></script> <!-- Lottie Library -->
-  <script src="theme.js" defer></script> <!-- Added theme.js -->
-  <script type="module" src="main.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/web-streams-polyfill@2.0.2/dist/ponyfill.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/streamsaver@2.0.3/StreamSaver.min.js"></script>
+<script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+<script src="theme.js" defer></script>
+<script type="module" src="main.js" defer></script>
 </body>
 </html>
