@@ -10,7 +10,6 @@ function getPeerIdFromURL() {
 }
 function show(elem) { if (elem) elem.classList.remove("hidden"); }
 function hide(elem) { if (elem) elem.classList.add("hidden"); }
-function getCurrentTimeStr() { return new Date().toLocaleTimeString(); }
 const USER_COLORS = [
   "#1859bb", "#267c26", "#a12c3a", "#8c2cb1", "#b17a2c", "#308898", "#cb482a", "#1f7272", "#b12c8c"
 ];
@@ -36,10 +35,12 @@ let knownMsgIds = new Set();
 let hostStatusOverrides = null;
 const fileTransfers = {}; // State for ongoing file transfers
 let encryptionKeys = {}; // Stores CryptoKey objects for sending, or imported keys for receiving (fileMsgId -> CryptoKey)
+let preSessionFiles = []; // To store files selected before starting a session
+
 
 // --------------- DOM refs ---------------
 const startBtn            = document.getElementById("startBtn");
-const startSection        = document.getElementById("startSection");
+const startSection        = document.getElementById("startSection"); // This section is removed from HTML but ref is kept to avoid errors if logic expects it
 const sessionInfoSection  = document.getElementById("sessionInfoSection");
 const linkSection         = document.getElementById("linkSection");
 const joinLinkA           = document.getElementById("joinLink");
@@ -55,13 +56,12 @@ const fileTransferSection = document.getElementById("fileTransferSection");
 const fileBtn             = document.getElementById("fileBtn");
 const fileInput           = document.getElementById("fileInput");
 const fileMessagesArea    = document.getElementById("fileMessagesArea");
+const connectionStatusOverlay = document.getElementById("connection-status-overlay");
 // New DOM references for collapsible session info
 const sessionInfoHeader = document.getElementById("sessionInfoHeader");
 const sessionInfoContent = document.getElementById("sessionInfoContent");
 const toggleSessionInfoBtn = document.getElementById("toggleSessionInfoBtn");
 const connectedPeerName = document.getElementById("connectedPeerName");
-// Lottie animation container
-const lottieAnimationContainer = document.getElementById("lottie-animation-container");
 
 
 // Username helpers
@@ -80,44 +80,28 @@ function assignHostName() {
   usernameInput.value = myUsername;
 }
 
-// --------------- Lottie Animation Logic ---------------
-const lottieAnimations = {}; // Cache for loaded Lottie animations
-
+// --------------- UI Feedback ---------------
 /**
- * Plays a Lottie animation.
- * @param {string} animationPath - Path to the Lottie JSON file (e.g., 'assets/green.json').
- * @param {string} animationId - A unique ID for caching the animation instance (e.g., 'green-animation').
+ * Triggers a subtle, full-screen pulse animation for connection status changes.
+ * @param {'connect' | 'disconnect'} type - The type of event.
  */
-function playAnimation(animationPath, animationId) {
-  if (!lottieAnimationContainer) return;
+function triggerConnectionAnimation(type) {
+  if (!connectionStatusOverlay) return;
+  const className = type === 'connect' ? 'animate-connect' : 'animate-disconnect';
 
-  // Clear previous animation if any
-  lottieAnimationContainer.innerHTML = '';
-  lottieAnimationContainer.classList.remove('hidden');
-  lottieAnimationContainer.classList.add('visible'); // Fade in
+  // Remove any existing animation classes to reset
+  connectionStatusOverlay.classList.remove('animate-connect', 'animate-disconnect');
 
-  let anim;
-  if (lottieAnimations[animationId]) {
-    anim = lottieAnimations[animationId];
-    anim.destroy(); // Destroy previous instance to re-render
-  }
+  // We use a timeout to allow the browser to remove the class before adding it again,
+  // which is necessary to re-trigger the animation.
+  setTimeout(() => {
+    connectionStatusOverlay.classList.add(className);
+  }, 10);
 
-  anim = lottie.loadAnimation({
-    container: lottieAnimationContainer, // the dom element that will contain the animation
-    renderer: 'svg',
-    loop: false, // Play once
-    autoplay: true,
-    path: animationPath // the path to the animation json
-  });
-
-  lottieAnimations[animationId] = anim; // Store the new instance
-
-  anim.onComplete = () => {
-    lottieAnimationContainer.classList.remove('visible'); // Fade out
-    lottieAnimationContainer.classList.add('hidden'); // Hide after fade out
-    anim.destroy(); // Clean up the animation instance after completion
-    delete lottieAnimations[animationId]; // Remove from cache
-  };
+  // Remove the class after the animation is done
+  setTimeout(() => {
+    connectionStatusOverlay.classList.remove(className);
+  }, 2200); // Must match the animation duration in CSS
 }
 
 
@@ -142,41 +126,50 @@ function formatFileSize(bytes) {
  * @param {number} options.fileSize - Size of the file in bytes.
  * @param {string} options.senderId - Peer ID of the sender.
  * @param {string} options.username - Username of the sender.
- * @param {string} options.timestamp - Timestamp of the message.
  * @param {boolean} [options.encrypted=false] - Whether the file is encrypted.
  */
-function addFileMessage({ fileMsgId, fileName, fileSize, senderId, username, timestamp, encrypted = false }) {
+function addFileMessage({ fileMsgId, fileName, fileSize, senderId, username, encrypted = false }) {
   if (!fileMessagesArea) return;
   // Prevent duplicate messages
   if (fileMessagesArea.querySelector(`[data-file-msg-id="${fileMsgId}"]`)) return;
 
+  const isSender = senderId === myPeerId;
   const div = document.createElement('div');
-  div.className = 'message-tile file ' + (senderId === myPeerId ? 'outgoing' : 'incoming');
+  div.className = 'message-tile file ' + (isSender ? 'outgoing' : 'incoming');
   div.dataset.fileMsgId = fileMsgId; // Store file message ID for easy lookup
   div.setAttribute('data-file-msg-id', fileMsgId); // Also set as attribute for CSS selectors
   div.innerHTML = `
-    <div class="message-header">
-      <span class="message-user-dot" style="background:${usernameColor(username)};"></span>
-      <span class="message-username">${username}</span>
-      <span class="message-timestamp">${timestamp}</span>
+    <div class="file-tile-content">
+        <div class="message-header">
+            <span class="message-user-dot" style="background:${usernameColor(username)};"></span>
+            <span class="message-username" style="color:${usernameColor(username)};">${username}</span>
+        </div>
+        <div class="file-meta-row">
+            <span class="material-icons file-icon">insert_drive_file</span>
+            <span class="file-name" title="${fileName}">${fileName}</span>
+            <span class="file-size">${formatFileSize(fileSize)} ${encrypted ? '<span class="material-icons" style="font-size:16px; margin-left:4px;" title="Encrypted">lock</span>' : ''}</span>
+        </div>
+        <div class="file-progress-bar hidden"><div class="file-progress-bar-inner"></div></div>
+        <div class="file-status-msg" style="font-size:0.92em;"></div>
     </div>
-    <div class="file-meta-row">
-      <span class="material-icons file-icon">insert_drive_file</span>
-      <span class="file-name" title="${fileName}">${fileName}</span>
-      <span class="file-size">${formatFileSize(fileSize)} ${encrypted ? '<span class="material-icons" style="font-size:16px; margin-left:4px;" title="Encrypted">lock</span>' : ''}</span>
+    <div class="file-tile-actions">
+      ${!isSender ? `
       <button class="file-download-link icon-btn" title="Download" aria-label="Download">
         <span class="material-icons">download</span>
-      </button>
+      </button>` : ''}
+      ${isSender ? `
+      <button class="file-delete-btn icon-btn" title="Delete" aria-label="Delete">
+        <span class="material-icons">delete</span>
+      </button>` : ''}
       <button class="file-cancel-link icon-btn hidden" title="Cancel" aria-label="Cancel">
         <span class="material-icons">cancel</span>
       </button>
     </div>
-    <div class="file-progress-bar hidden"><div class="file-progress-bar-inner"></div></div>
-    <div class="file-status-msg" style="font-size:0.92em;"></div>
   `;
   fileMessagesArea.appendChild(div);
   fileMessagesArea.scrollTop = fileMessagesArea.scrollHeight; // Scroll to bottom
 }
+
 
 /**
  * Updates the UI of a specific file transfer tile.
@@ -195,22 +188,27 @@ function updateFileTileUI(tile, { status, progress, error, reason }) {
   const statusMsg = tile.querySelector('.file-status-msg');
 
   if (status === 'downloading') {
-    downloadBtn.disabled = true;
-    downloadBtn.classList.add('hidden'); // Hide download button while downloading
+    if (downloadBtn) {
+        downloadBtn.disabled = true;
+        downloadBtn.classList.add('hidden'); // Hide download button while downloading
+    }
     cancelBtn.classList.remove('hidden');
     progressBar.classList.remove('hidden');
     progressInner.style.width = Math.round(progress * 100) + '%';
     statusMsg.textContent = '⬇️ Downloading...';
   } else if (status === 'completed') {
-    downloadBtn.disabled = true;
-    downloadBtn.classList.remove('hidden'); // Keep download button visible but disabled after completion
+    if (downloadBtn) {
+        downloadBtn.disabled = false; // Allow re-downloading
+        downloadBtn.classList.remove('hidden');
+    }
     cancelBtn.classList.add('hidden');
     progressBar.classList.add('hidden');
     statusMsg.textContent = '✅ Download complete';
-    playAnimation('assets/green.json', 'file-complete-animation'); // Play green animation on completion
   } else if (status === 'canceled') {
-    downloadBtn.disabled = false;
-    downloadBtn.classList.remove('hidden'); // Show download button when cancelled
+    if (downloadBtn) {
+        downloadBtn.disabled = false;
+        downloadBtn.classList.remove('hidden'); // Show download button when cancelled
+    }
     cancelBtn.classList.add('hidden');
     progressBar.classList.add('hidden');
     if (reason === 'user') {
@@ -224,10 +222,11 @@ function updateFileTileUI(tile, { status, progress, error, reason }) {
     } else {
       statusMsg.textContent = '❌ Canceled';
     }
-    playAnimation('assets/red.json', 'file-cancel-animation'); // Play red animation on cancellation
   } else { // 'ready' or initial state
-    downloadBtn.disabled = false;
-    downloadBtn.classList.remove('hidden'); // Ensure download button is visible in ready state
+    if (downloadBtn) {
+        downloadBtn.disabled = false;
+        downloadBtn.classList.remove('hidden'); // Ensure download button is visible in ready state
+    }
     cancelBtn.classList.add('hidden');
     progressBar.classList.add('hidden');
     statusMsg.textContent = '';
@@ -329,7 +328,6 @@ function updatePeersList() {
       hide(peersSection);
     }
   }
-  // Removed status updates to a general status element as it's not present in index.html
 }
 
 function getAllStatuses() {
@@ -354,7 +352,6 @@ function toggleSessionInfo() {
 }
 
 // Add event listener for the toggle button
-// This needs to be added after the DOM is loaded, or at least after the element exists.
 if (toggleSessionInfoBtn) {
   toggleSessionInfoBtn.addEventListener("click", toggleSessionInfo);
 }
@@ -416,28 +413,28 @@ let originalSetupConnHandlers; // Declare globally or in a scope accessible to b
  * @param {string} pid - The peer ID connected.
  * @param {boolean} isIncoming - True if this is an incoming connection, false if outgoing.
  */
-function setupConnHandlers(conn, pid, isIncoming) {
+async function setupConnHandlers(conn, pid, isIncoming) {
   const entry = (mesh[pid] = mesh[pid] || { status: "connecting", backoff: 1000, lastPing: Date.now() });
   entry.conn = conn;
   if (conn._setupDone) return; // Prevent double setup
   conn._setupDone = true;
 
-  conn.on("open", () => {
+  conn.on("open", async () => { // Make this handler async
     // Collapse the session info section when a peer connects
     if (!sessionInfoSection.classList.contains("collapsed")) {
       sessionInfoSection.classList.add("collapsed");
     }
-    
+
     entry.status = "connected";
     entry.backoff = 1000; // Reset backoff on successful connection
     entry.lastPing = Date.now();
     if (!peerUsernames[pid]) peerUsernames[pid] = assignDefaultUsernameToPeer(pid);
     else assignDefaultUsernameToPeer(pid); // Ensure userCount is correct
     updatePeersList(); // Update the list when a peer connects
-    show(fileTransferSection); // Show file transfer section on successful connection
+    show(fileTransferSection); // Show file transfer section on successful connection FOR ALL USERS
 
-    // Play green animation when a new peer joins
-    playAnimation('assets/green.json', 'peer-join-animation');
+    // Trigger animation when a new peer joins
+    triggerConnectionAnimation('connect');
 
     if (isHost) {
       if (Object.keys(peerUsernames).length === 1) assignHostName(); // Assign host name if first peer
@@ -450,6 +447,18 @@ function setupConnHandlers(conn, pid, isIncoming) {
           allStatuses: getAllStatuses()
         });
       }
+
+      // NEW: Process any files selected before the session started
+      if (preSessionFiles.length > 0) {
+        fileMessagesArea.innerHTML = ''; // Clear the pre-session file list from UI
+        const filesToSend = [...preSessionFiles];
+        preSessionFiles = []; // Clear the array
+
+        // Concurrently process and send all pre-session files
+        const sendPromises = filesToSend.map(file => sendFile(file));
+        await Promise.all(sendPromises);
+      }
+
       broadcastUserListWithStatus(); // Inform all peers about updated user list
       sendHistoryToPeer(conn); // Send file transfer history to the new peer
     } else {
@@ -468,13 +477,13 @@ function setupConnHandlers(conn, pid, isIncoming) {
       window._hostSessionEnded = true;
       hostStatusOverrides = null;
       updatePeersList(); // Update the list when a peer disconnects
-      playAnimation('assets/red.json', 'peer-disconnect-animation'); // Play red animation on host disconnect
+      triggerConnectionAnimation('disconnect'); // Trigger animation on host disconnect
       return;
     }
     updatePeersList(); // Update the list when a peer disconnects
     if (isHost) broadcastUserListWithStatus(); // Inform other peers about disconnect
     scheduleReconnect(pid); // Attempt to reconnect
-    playAnimation('assets/red.json', 'peer-disconnect-animation'); // Play red animation on peer disconnect
+    triggerConnectionAnimation('disconnect'); // Trigger animation on peer disconnect
   }
   conn.on("close", handleDisconnect);
   conn.on("error", handleDisconnect);
@@ -587,7 +596,17 @@ async function onDataReceived(data, fromPid, conn) { // Made async for handleFil
     if (hostStatusOverrides) hostStatusOverrides[pid] = 'disconnected';
     updatePeersList();
     if (isHost) broadcastUserListWithStatus();
-    playAnimation('assets/red.json', 'peer-disconnect-animation'); // Play red animation on graceful disconnect
+    triggerConnectionAnimation('disconnect'); // Trigger animation on graceful disconnect
+    return;
+  }
+  // Handle file deletion broadcast
+  if (data && data.type === 'file-delete' && data.fileMsgId) {
+    const fileMsgId = data.fileMsgId;
+    const tile = fileMessagesArea.querySelector(`[data-file-msg-id="${fileMsgId}"]`);
+    if (tile) {
+      tile.remove();
+    }
+    fileTransferHistory = fileTransferHistory.filter(msg => msg.fileMsgId !== fileMsgId);
     return;
   }
   // Handle incoming file metadata messages
@@ -599,8 +618,6 @@ async function onDataReceived(data, fromPid, conn) { // Made async for handleFil
   if (data && data.type === 'file-request' || data.type === 'file-chunk' ||
       data.type === 'file-end' || data.type === 'file-error' ||
       data.type === 'file-cancel' || data.type === 'chunk-ack' || data.type === 'file-complete') {
-    // These messages are intercepted and handled directly within the patched conn.on('data')
-    // in setupConnHandlers for efficient per-connection file transfer logic.
     return;
   }
 }
@@ -641,7 +658,7 @@ function startKeepAlive() {
         updatePeersList();
         if (isHost) broadcastUserListWithStatus();
         scheduleReconnect(pid);
-        playAnimation('assets/red.json', 'peer-disconnect-animation'); // Play red animation on unexpected disconnect
+        triggerConnectionAnimation('disconnect'); // Trigger animation on unexpected disconnect
       }
     });
     if (isHost && myPeerId) updatePeersList(); // Host updates its own list
@@ -651,7 +668,7 @@ function startKeepAlive() {
 // --------------- Event Listeners ---------------
 startBtn.addEventListener("click", () => {
   startBtn.disabled = true;
-  hide(startSection);
+  hide(startBtn);
   show(sessionInfoSection);
   sessionInfoSection.classList.remove("collapsed"); // Start expanded
   isHost = true;
@@ -670,6 +687,7 @@ startBtn.addEventListener("click", () => {
     show(linkSection);
     show(qrContainer);
     // Generate QR code for join link
+    qrcodeDiv.innerHTML = ''; // Clear previous QR code
     new QRCode(qrcodeDiv, {
       text: url,
       width: 180,
@@ -695,7 +713,7 @@ startBtn.addEventListener("click", () => {
  * Initiates joining a PeerJS mesh as a peer (not host).
  */
 function joinMesh() {
-  hide(startSection);
+  hide(startSection); // startSection doesn't exist, but this is safe
   show(sessionInfoSection);
   sessionInfoSection.classList.remove("collapsed"); // Start expanded
   peer = new Peer(undefined, { debug: 2 }); // Initialize PeerJS as peer
@@ -728,8 +746,7 @@ function joinMesh() {
 // Automatically join mesh if 'join' parameter is present in URL
 if (joinPeerId) {
   joinMesh();
-} else {
-  show(startSection); // Show start button if no join parameter
+  hide(fileTransferSection); // Peers joining shouldn't see the file selection until connected
 }
 
 usernameForm.addEventListener("submit", e => {
@@ -747,127 +764,148 @@ usernameForm.addEventListener("submit", e => {
 });
 
 // --------------- Crypto Utility Functions ---------------
-// These functions use the Web Crypto API for AES-GCM encryption/decryption.
-// AES-GCM is an authenticated encryption mode, providing both confidentiality and integrity.
-
-/**
- * Generates a new AES-GCM 256-bit symmetric key.
- * @returns {Promise<CryptoKey>} A promise that resolves with the generated CryptoKey.
- */
 async function generateAesGcmKey() {
   return await crypto.subtle.generateKey(
     { name: "AES-GCM", length: 256 },
-    true, // Key is extractable (needed to send it to other peers)
+    true,
     ["encrypt", "decrypt"]
   );
 }
 
-/**
- * Encrypts data using AES-GCM.
- * @param {CryptoKey} key - The AES-GCM CryptoKey to use for encryption.
- * @param {ArrayBuffer} data - The data to encrypt (as an ArrayBuffer).
- * @returns {Promise<{encryptedData: Uint8Array, iv: Uint8Array}>} A promise that resolves with the encrypted data and the IV.
- */
 async function encryptData(key, data) {
-  // Generate a unique Initialization Vector (IV) for each encryption operation.
-  // This is crucial for security with AES-GCM. 16 bytes (128 bits) is standard for AES-GCM.
-  const iv = crypto.getRandomValues(new Uint8Array(16)); 
+  const iv = crypto.getRandomValues(new Uint8Array(16));
   const encrypted = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv: iv },
     key,
-    data // Data to encrypt must be an ArrayBuffer or TypedArray
+    data
   );
   return { encryptedData: new Uint8Array(encrypted), iv: iv };
 }
 
-/**
- * Decrypts data using AES-GCM.
- * @param {CryptoKey} key - The AES-GCM CryptoKey to use for decryption.
- * @param {ArrayBuffer} encryptedData - The encrypted data (as an ArrayBuffer).
- * @param {Uint8Array} iv - The Initialization Vector used during encryption.
- * @returns {Promise<Uint8Array>} A promise that resolves with the decrypted data.
- */
 async function decryptData(key, encryptedData, iv) {
   const decrypted = await crypto.subtle.decrypt(
     { name: "AES-GCM", iv: iv },
     key,
-    encryptedData // Encrypted data must be an ArrayBuffer or TypedArray
+    encryptedData
   );
   return new Uint8Array(decrypted);
 }
 
-/**
- * Exports a CryptoKey into a raw, transferable format (ArrayBuffer).
- * This is necessary to send the key over the network.
- * @param {CryptoKey} key - The CryptoKey to export.
- * @returns {Promise<ArrayBuffer>} A promise that resolves with the raw key data.
- */
 async function exportKey(key) {
   return await crypto.subtle.exportKey("raw", key);
 }
 
-/**
- * Imports a raw key (ArrayBuffer) back into a CryptoKey object.
- * This is necessary for the receiving peer to use the key.
- * @param {ArrayBuffer} rawKey - The raw key data as an ArrayBuffer.
- * @returns {Promise<CryptoKey>} A promise that resolves with the imported CryptoKey.
- */
 async function importKey(rawKey) {
   return await crypto.subtle.importKey(
     "raw",
     rawKey,
     { name: "AES-GCM", length: 256 },
-    true, // Key should be extractable if it might be re-exported (e.g., for history)
+    true,
     ["encrypt", "decrypt"]
   );
 }
 
 // --------------- File Transfer Logic ---------------
 
-// Event listener for the file selection button (triggers hidden file input)
-fileBtn.addEventListener('click', () => fileInput.click());
+/**
+ * Renders the list of files selected before the session starts.
+ */
+function renderPreSessionFiles() {
+    if (!fileMessagesArea) return;
+    fileMessagesArea.innerHTML = ''; // Clear the area first
 
-// Event listener for when a file is selected in the input
-fileInput.addEventListener('change', async e => { // Made async here
-  const file = e.target.files[0];
+    if (preSessionFiles.length === 0) {
+        hide(startBtn);
+        return;
+    }
+
+    preSessionFiles.forEach((file, index) => {
+        const div = document.createElement('div');
+        div.className = 'message-tile file'; // Use same base class
+        div.innerHTML = `
+            <div class="file-tile-content">
+                <div class="file-meta-row">
+                    <span class="material-icons file-icon">insert_drive_file</span>
+                    <span class="file-name" title="${file.name}">${file.name}</span>
+                    <span class="file-size">${formatFileSize(file.size)}</span>
+                </div>
+            </div>
+            <div class="file-tile-actions">
+                <button class="remove-file-btn icon-btn" data-index="${index}" title="Remove file" aria-label="Remove file">
+                    <span class="material-icons">delete</span>
+                </button>
+            </div>
+        `;
+        fileMessagesArea.appendChild(div);
+    });
+
+    // Add event listeners for the remove buttons
+    fileMessagesArea.querySelectorAll('.remove-file-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const indexToRemove = parseInt(e.currentTarget.dataset.index, 10);
+            preSessionFiles.splice(indexToRemove, 1); // Remove from array
+            renderPreSessionFiles(); // Re-render the list
+        });
+    });
+
+    show(startBtn);
+}
+
+
+/**
+ * Processes a single file for sending: creates metadata, updates UI, and broadcasts.
+ * @param {File} file The file object to send.
+ */
+async function sendFile(file) {
   if (!file) return;
 
-  // Generate a unique ID for this file message
   const fileMsgId = `${myPeerId}-${Date.now()}-${Math.random().toString(16).slice(2,8)}`;
-
-  // --- Encryption: Generate key for this file and export it for transfer ---
   const encryptionKey = await generateAesGcmKey();
-  const exportedKey = await exportKey(encryptionKey); // Export key to send it as part of metadata
-
-  // Store the CryptoKey object for later use by the sender when sending chunks
+  const exportedKey = await exportKey(encryptionKey);
   encryptionKeys[fileMsgId] = encryptionKey;
 
   const msg = {
-    type: 'file', // Custom message type for file metadata
+    type: 'file',
     fileMsgId,
     fileName: file.name,
     fileSize: file.size,
     senderId: myPeerId,
     username: myUsername,
-    timestamp: getCurrentTimeStr(),
-    encrypted: true, // Indicate that the file is encrypted
-    // Send the raw key bytes.
-    // SECURITY NOTE: In a real-world application, the key should NOT be sent in the clear like this.
-    // A secure key exchange mechanism (e.g., Diffie-Hellman, or a pre-shared key) is required.
-    // This implementation demonstrates the encryption of file data, but assumes the key transfer
-    // is secured by the underlying WebRTC DTLS, or is acceptable for demonstration purposes.
+    encrypted: true,
     encryptionKey: Array.from(new Uint8Array(exportedKey)),
-    ivSize: 16 // AES-GCM IV size (fixed at 16 bytes)
+    ivSize: 16
   };
 
-  addFileMessage(msg); // Add the file message tile to the UI
-  // Store the file object and its transfer state for the sender
+  addFileMessage(msg); // Add the proper transfer tile
   if (!fileTransfers[fileMsgId]) fileTransfers[fileMsgId] = {};
   fileTransfers[fileMsgId][myPeerId] = { file, status: 'ready', progress: 0, controller: null };
-  fileInput.value = ''; // Clear the input for next selection
 
-  fileTransferHistory.push(msg); // Add to history for new peers
-  broadcastData(msg); // Broadcast the file metadata message to all connected peers
+  // Add to history only if it's not a duplicate
+  if (!fileTransferHistory.find(m => m.fileMsgId === fileMsgId)) {
+    fileTransferHistory.push(msg);
+  }
+  broadcastData(msg);
+}
+
+// Event listener for the file selection button (triggers hidden file input)
+fileBtn.addEventListener('click', () => fileInput.click());
+
+// Event listener for when files are selected in the input
+fileInput.addEventListener('change', async e => {
+  const files = e.target.files;
+  if (!files || files.length === 0) return;
+
+  if (!peer) { // --- Case 1: Session NOT started yet ---
+    for (const file of files) {
+      preSessionFiles.push(file);
+    }
+    renderPreSessionFiles();
+  } else { // --- Case 2: Session is ALREADY active ---
+    const sendPromises = Array.from(files).map(file => sendFile(file));
+    await Promise.all(sendPromises);
+  }
+  fileInput.value = ''; // Clear the input for next selection
 });
 
 /**
@@ -876,36 +914,29 @@ fileInput.addEventListener('change', async e => { // Made async here
  * @param {object} msg - The file metadata message.
  */
 async function handleFileMessage(msg) { // Made async here
-  // Add to history if not already present
   if (!fileTransferHistory.find(m => m.type === 'file' && m.fileMsgId === msg.fileMsgId)) {
     fileTransferHistory.push(msg);
   }
-  // --- Encryption: Store/Import key if encrypted ---
   if (msg.encrypted && msg.encryptionKey) {
     try {
-      // Import the key from the received raw bytes for decryption later
       const importedKey = await importKey(new Uint8Array(msg.encryptionKey));
       encryptionKeys[msg.fileMsgId] = importedKey;
     } catch (e) {
       console.error("Failed to import encryption key:", e);
       displayMessageBox('Error', `Failed to import encryption key for file: ${msg.fileName}. Cannot download.`);
-      // Optionally, mark this file as un-downloadable or show an error state
       return;
     }
   }
 
-  // Initialize file transfer state for the receiver
   if (!fileTransfers[msg.fileMsgId]) fileTransfers[msg.fileMsgId] = {};
   if (!fileTransfers[msg.fileMsgId][myPeerId]) {
     fileTransfers[msg.fileMsgId][myPeerId] = { status: 'ready', progress: 0, controller: null };
   }
   addFileMessage(msg); // Add the file message tile to the UI
-  // Check if StreamSaver.js is available (required for downloading)
   if (!window.streamSaver) {
     const tile = fileMessagesArea.querySelector(`[data-file-msg-id="${msg.fileMsgId}"]`);
     if (tile) {
       updateFileTileUI(tile, { status: 'canceled', progress: 0, error: 'streamSaver.js not loaded. Please reload or contact the host.' });
-      // Using a custom message box instead of alert()
       displayMessageBox('Error', 'File download requires streamSaver.js. Please reload the page or contact the host.');
     }
   }
@@ -915,9 +946,10 @@ async function handleFileMessage(msg) { // Made async here
 fileMessagesArea.addEventListener('click', async function(e) {
   const downloadBtn = e.target.closest('.file-download-link');
   const cancelBtn = e.target.closest('.file-cancel-link');
+  const deleteBtn = e.target.closest('.file-delete-btn');
   const tile = e.target.closest('.message-tile.file');
 
-  if (!tile) return; // Not a file message tile
+  if (!tile) return;
 
   const fileMsgId = tile.dataset.fileMsgId;
 
@@ -927,9 +959,21 @@ fileMessagesArea.addEventListener('click', async function(e) {
       displayMessageBox('Error', 'File download requires streamSaver.js. Please reload the page or contact the host.');
       return;
     }
-    startFileDownload(tile, fileMsgId); // Initiate file download
+    startFileDownload(tile, fileMsgId);
   } else if (cancelBtn) {
-    cancelFileDownload(tile, fileMsgId); // Cancel ongoing download
+    cancelFileDownload(tile, fileMsgId);
+  } else if (deleteBtn) {
+      displayMessageBox('Confirm Delete', 'This will remove the file for all participants. Are you sure?', true)
+        .then(confirmed => {
+            if (confirmed) {
+                // Remove from local UI
+                tile.remove();
+                // Remove from history
+                fileTransferHistory = fileTransferHistory.filter(msg => msg.fileMsgId !== fileMsgId);
+                // Broadcast deletion
+                broadcastData({ type: 'file-delete', fileMsgId });
+            }
+        });
   }
 });
 
@@ -945,27 +989,22 @@ setupConnHandlers = function(conn, pid, isIncoming) {
 
   let activeFileSenders = {}; // Track active file send operations for this specific connection
 
-  // Listen for data on this connection
-  // This listener is added to the *new* conn object, so it will receive all data for this specific connection
-  conn.on('data', async data => { // Made async here
-    // Handle file-request message (sent by receiver to request file chunks)
+  conn.on('data', async data => {
     if (data && data.type === 'file-request' && data.fileMsgId) {
       const fileMsgId = data.fileMsgId;
       const fileTransferState = fileTransfers[fileMsgId]?.[myPeerId];
-      const fileMsg = findFileMsgInHistory(fileMsgId); // Get the original file metadata
+      const fileMsg = findFileMsgInHistory(fileMsgId);
 
-      // Check if the file exists and belongs to this peer
       if (!fileTransferState || !fileTransferState.file) {
         conn.send({ type: 'file-error', error: 'File not found', fileMsgId });
-        conn.close(); // Close connection if file not found
+        conn.close();
         return;
       }
 
       const file = fileTransferState.file;
       const isEncrypted = fileMsg && fileMsg.encrypted;
-      const encryptionKey = isEncrypted ? encryptionKeys[fileMsgId] : null; // Get the CryptoKey
+      const encryptionKey = isEncrypted ? encryptionKeys[fileMsgId] : null;
 
-      // If file is marked encrypted but we don't have the key, something went wrong
       if (isEncrypted && !encryptionKey) {
           console.error(`Encryption key not found for encrypted file ${fileMsgId}`);
           conn.send({ type: 'file-error', error: 'Encryption key missing on sender side', fileMsgId });
@@ -973,63 +1012,52 @@ setupConnHandlers = function(conn, pid, isIncoming) {
           return;
       }
 
-      const chunkSize = 1024 * 1024; // 1 MB chunk size
-      const windowSize = 4; // Number of unacknowledged chunks allowed (flow control)
+      const chunkSize = 1024 * 1024;
+      const windowSize = 4;
       let offset = 0;
       let canceled = false;
       let awaitingAcks = 0;
-      let nextChunkId = 0;
-      let lastAckedChunkId = -1;
-      let chunkAckMap = {}; // To track acknowledged chunks
-      let retriesMap = {}; // To track retries per chunk
-      let maxRetries = 5; // Max retries for a chunk
-      let ackTimeouts = {}; // To manage timeouts for acknowledgements
-      let totalChunks = Math.ceil(file.size / chunkSize);
+      let chunkAckMap = {};
+      let retriesMap = {};
+      let maxRetries = 5;
+      let ackTimeouts = {};
 
-      // Store a cancellation function for this specific file transfer
       activeFileSenders[fileMsgId] = () => { canceled = true; };
 
-      // Listener for incoming control messages related to THIS file transfer on THIS connection
-      // This is crucial: we need a separate listener for control messages on the same connection
-      // that specifically targets the file transfer.
       let fileTransferControlListener = d => {
         if (d && d.type === 'file-cancel' && d.fileMsgId === fileMsgId) {
           canceled = true;
-          conn.close(); // Close connection for this transfer
+          conn.close();
         }
         if (d && d.type === 'chunk-ack' && d.fileMsgId === fileMsgId && typeof d.chunkId === 'number') {
-          if (!chunkAckMap[d.chunkId]) { // Only process if not already acknowledged
+          if (!chunkAckMap[d.chunkId]) {
             chunkAckMap[d.chunkId] = true;
             awaitingAcks--;
             if (ackTimeouts[d.chunkId]) {
               clearTimeout(ackTimeouts[d.chunkId]);
               delete ackTimeouts[d.chunkId];
             }
-            lastAckedChunkId = Math.max(lastAckedChunkId, d.chunkId);
           }
         }
         if (d && d.type === 'file-complete' && d.fileMsgId === fileMsgId) {
-          // Receiver confirmed completion, close connection
           conn.close();
         }
       };
-      conn.on('data', fileTransferControlListener); // Add this specific listener
+      conn.on('data', fileTransferControlListener);
 
       let chunkId = 0;
       while (offset < file.size && !canceled) {
-        // Flow control: wait if too many unacknowledged chunks
         while (awaitingAcks >= windowSize && !canceled) {
-          await new Promise(resolve => setTimeout(resolve, 10)); // Small delay
+          await new Promise(resolve => setTimeout(resolve, 10));
         }
         if (canceled) break;
 
         const slice = file.slice(offset, offset + chunkSize);
-        const chunkBuffer = await slice.arrayBuffer(); // Read chunk as ArrayBuffer
+        const chunkBuffer = await slice.arrayBuffer();
 
         let dataToSend = chunkBuffer;
         let iv = null;
 
-        // --- Encryption: Encrypt chunk if the file is marked as encrypted ---
         if (isEncrypted && encryptionKey) {
             try {
                 const encryptedResult = await encryptData(encryptionKey, chunkBuffer);
@@ -1039,55 +1067,49 @@ setupConnHandlers = function(conn, pid, isIncoming) {
                 console.error("Encryption failed for chunk:", e);
                 conn.send({ type: 'file-error', error: 'Encryption failed: ' + e.message, fileMsgId });
                 conn.close();
-                canceled = true; // Mark as canceled to break loop
+                canceled = true;
                 break;
             }
         }
 
-        // Send the chunk data (encrypted or not), its ID, file message ID, and IV if encrypted
         conn.send({ type: 'file-chunk', data: dataToSend, chunkId, fileMsgId, iv: iv ? Array.from(iv) : null });
         awaitingAcks++;
         retriesMap[chunkId] = 0;
 
-        // Set a timeout for acknowledgement
         ackTimeouts[chunkId] = setTimeout(function retryChunk() {
-          if (!chunkAckMap[chunkId] && !canceled) { // If not acknowledged and not canceled
+          if (!chunkAckMap[chunkId] && !canceled) {
             retriesMap[chunkId]++;
             if (retriesMap[chunkId] > maxRetries) {
               conn.send({ type: 'file-error', error: 'Receiver not responding', fileMsgId });
               conn.close();
-              canceled = true; // Mark as canceled to break loop
+              canceled = true;
             } else {
-              // Resend the original chunk data (already encrypted if applicable) and IV
               conn.send({ type: 'file-chunk', data: dataToSend, chunkId, fileMsgId, iv: iv ? Array.from(iv) : null });
-              ackTimeouts[chunkId] = setTimeout(retryChunk, 7000); // Retry after 7 seconds
+              ackTimeouts[chunkId] = setTimeout(retryChunk, 7000);
             }
           }
-        }, 7000); // Initial timeout for 7 seconds
+        }, 7000);
 
         offset += chunkSize;
         chunkId++;
       }
 
-      // Wait for all outstanding acknowledgements before signaling end
       while (awaitingAcks > 0 && !canceled) {
         await new Promise(resolve => setTimeout(resolve, 10));
       }
 
       if (!canceled) {
-        conn.send({ type: 'file-end', fileMsgId }); // Signal end of file
+        conn.send({ type: 'file-end', fileMsgId });
       }
 
-      // Give some time for final messages to pass before closing connection
       setTimeout(() => { conn.close(); }, 10000);
 
     } else if (data && data.type === 'file-cancel' && data.fileMsgId) {
-      // If a sender receives a cancel message for a file they are sending
       if (activeFileSenders[data.fileMsgId]) {
-        activeFileSenders[data.fileMsgId](); // Execute cancellation logic
+        activeFileSenders[data.fileMsgId]();
         delete activeFileSenders[data.fileMsgId];
       }
-      conn.close(); // Close the connection for this transfer
+      conn.close();
     }
   });
 };
@@ -1097,21 +1119,19 @@ setupConnHandlers = function(conn, pid, isIncoming) {
  * @param {HTMLElement} tile - The file message tile DOM element.
  * @param {string} fileMsgId - The unique ID of the file message.
  */
-async function startFileDownload(tile, fileMsgId) { // Made async here
+async function startFileDownload(tile, fileMsgId) {
   if (!fileTransfers[fileMsgId]) fileTransfers[fileMsgId] = {};
 
-  // If a download is already in progress for this file, abort it first
   if (fileTransfers[fileMsgId][myPeerId] && fileTransfers[fileMsgId][myPeerId].controller) {
     fileTransfers[fileMsgId][myPeerId].controller.abort();
   }
 
-  // Initialize transfer state for the receiver
   fileTransfers[fileMsgId][myPeerId] = {
     status: 'downloading',
     progress: 0,
-    controller: new AbortController(), // Used for internal cancellation
-    conn: null, // PeerJS DataConnection for this transfer
-    cancel: null // Function to call for external cancellation
+    controller: new AbortController(),
+    conn: null,
+    cancel: null
   };
 
   updateFileTileUI(tile, { status: 'downloading', progress: 0 });
@@ -1123,12 +1143,11 @@ async function startFileDownload(tile, fileMsgId) { // Made async here
   }
 
   const senderId = fileMsg.senderId;
-  // Establish a new PeerJS connection specifically for this file transfer
   const conn = peer.connect(senderId, { reliable: true, metadata: { fileMsgId, action: 'download' } });
   fileTransfers[fileMsgId][myPeerId].conn = conn;
 
   conn.on('open', () => {
-    conn.send({ type: 'file-request', fileMsgId }); // Request the file from the sender
+    conn.send({ type: 'file-request', fileMsgId });
   });
 
   let fileWriter, received = 0, total = fileMsg.fileSize;
@@ -1141,43 +1160,60 @@ async function startFileDownload(tile, fileMsgId) { // Made async here
     return;
   }
 
-  // Create a writable stream to save the file
   let writableStream = streamSaver.createWriteStream(fileMsg.fileName, { size: total });
   fileWriter = writableStream.getWriter();
 
   let downloadAborted = false;
-  let chunkAckTimeout = null; // Timeout for receiving next chunk
+  let chunkAckTimeout = null;
 
   function sendAck(chunkId) {
-    conn.send({ type: 'chunk-ack', fileMsgId, chunkId });
+    if (conn.open) conn.send({ type: 'chunk-ack', fileMsgId, chunkId });
   }
 
   function sendFileComplete() {
-    conn.send({ type: 'file-complete', fileMsgId });
+    if (conn.open) conn.send({ type: 'file-complete', fileMsgId });
   }
 
   function abortDownload(errorMsg, reason) {
+    if (downloadAborted) return;
     downloadAborted = true;
-    if (fileWriter) fileWriter.abort(); // Abort the writable stream
+
+    const transfer = fileTransfers[fileMsgId]?.[myPeerId];
+    if (transfer) {
+      transfer.controller.abort();
+    }
+
+    // Only send cancel message to peer if it was a local user cancellation
+    if (reason === 'user' && conn && conn.open) {
+        conn.send({ type: 'file-cancel', fileMsgId });
+    }
+
+    if (fileWriter) fileWriter.abort().catch(()=>{}); // Aborting might throw an error if stream is already closed, ignore it.
     updateFileTileUI(tile, { status: 'canceled', progress: received / total, error: errorMsg, reason });
-    conn.close();
+    if (conn && conn.open) conn.close();
   }
 
-  conn.on('data', async chunk => { // Made async here
-    const transfer = fileTransfers[fileMsgId][myPeerId];
-    if (transfer.controller.signal.aborted || downloadAborted) {
-      abortDownload('Aborted', 'user');
+  fileWriter.closed.catch(err => {
+      if (!downloadAborted) {
+          console.log("Download stream aborted, likely by user cancelling save dialog.", err);
+          abortDownload("Canceled", "user");
+      }
+  });
+
+  conn.on('data', async chunk => {
+    const transfer = fileTransfers[fileMsgId]?.[myPeerId];
+    if (!transfer || transfer.controller.signal.aborted || downloadAborted) {
+      if(!downloadAborted) abortDownload('Aborted', 'user');
       return;
     }
 
     if (chunk.type === 'file-chunk' && chunk.data) {
       try {
-        let dataToWrite = new Uint8Array(chunk.data); // Default to raw data
+        let dataToWrite = new Uint8Array(chunk.data);
 
-        // --- Encryption: Decrypt chunk if the file is marked as encrypted ---
         if (fileMsg.encrypted && encryptionKeys[fileMsgId] && chunk.iv) {
             try {
-                const importedKey = encryptionKeys[fileMsgId]; // This key was imported in handleFileMessage
+                const importedKey = encryptionKeys[fileMsgId];
                 const iv = new Uint8Array(chunk.iv);
                 dataToWrite = await decryptData(importedKey, dataToWrite, iv);
             } catch (e) {
@@ -1187,28 +1223,28 @@ async function startFileDownload(tile, fileMsgId) { // Made async here
             }
         }
 
-        await fileWriter.write(dataToWrite); // Write decrypted (or raw) chunk to file
-        received += dataToWrite.byteLength; // Use decrypted size for progress
+        await fileWriter.write(dataToWrite);
+        received += dataToWrite.byteLength;
         transfer.progress = received / total;
         updateFileTileUI(tile, { status: 'downloading', progress: transfer.progress });
-        sendAck(chunk.chunkId); // Acknowledge receipt of chunk
+        sendAck(chunk.chunkId);
 
-        // Reset timeout for next chunk
         if (chunkAckTimeout) clearTimeout(chunkAckTimeout);
         chunkAckTimeout = setTimeout(() => {
           abortDownload('Timeout waiting for next chunk', 'connection');
-        }, 20000); // 20 seconds timeout
+        }, 20000);
 
       } catch (e) {
         abortDownload('Write error: ' + e.message, 'error');
       }
     } else if (chunk.type === 'file-end') {
       try {
-        await fileWriter.close(); // Close the writable stream
+        if(chunkAckTimeout) clearTimeout(chunkAckTimeout);
+        await fileWriter.close();
         updateFileTileUI(tile, { status: 'completed', progress: 1 });
-        fileTransfers[fileMsgId][myPeerId].status = 'completed';
-        sendFileComplete(); // Inform sender that file is complete
-        conn.close();
+        if (transfer) transfer.status = 'completed';
+        sendFileComplete();
+        setTimeout(() => conn.close(), 1000);
       } catch (e) {
         abortDownload('File close error: ' + e.message, 'error');
       }
@@ -1218,20 +1254,17 @@ async function startFileDownload(tile, fileMsgId) { // Made async here
   });
 
   conn.on('close', () => {
-    // If connection closes unexpectedly during download
-    if (!downloadAborted && fileTransfers[fileMsgId][myPeerId].status === 'downloading') {
+    const transfer = fileTransfers[fileMsgId]?.[myPeerId];
+    if (transfer && !downloadAborted && transfer.status === 'downloading') {
       updateFileTileUI(tile, { status: 'canceled', progress: received / total, reason: 'connection' });
     }
   });
 
-  // Function to allow external cancellation
-  fileTransfers[fileMsgId][myPeerId].cancel = () => {
-    fileTransfers[fileMsgId][myPeerId].controller.abort(); // Trigger internal abort
-    if (conn && conn.open) conn.send({ type: 'file-cancel', fileMsgId }); // Send cancel message to sender
-    if (fileWriter) fileWriter.abort(); // Abort the writable stream
-    updateFileTileUI(tile, { status: 'canceled', progress: fileTransfers[fileMsgId][myPeerId].progress, reason: 'user' });
-    conn.close();
-  };
+  if (fileTransfers[fileMsgId][myPeerId]) {
+    fileTransfers[fileMsgId][myPeerId].cancel = () => {
+        abortDownload('Canceled by you', 'user');
+    };
+  }
 }
 
 /**
@@ -1255,70 +1288,73 @@ function findFileMsgInHistory(fileMsgId) {
 }
 
 // Custom message box function (replaces alert)
-function displayMessageBox(title, message) {
-  // Create a simple modal/message box dynamically
-  const existingBox = document.getElementById('customMessageBox');
-  if (existingBox) existingBox.remove(); // Remove any existing box
+function displayMessageBox(title, message, isConfirm = false) {
+    // Return a promise that resolves with true (for OK/Confirm) or false (for Cancel)
+    return new Promise(resolve => {
+        const existingBox = document.getElementById('customMessageBox');
+        if (existingBox) existingBox.remove();
 
-  const messageBox = document.createElement('div');
-  messageBox.id = 'customMessageBox';
-  messageBox.style.cssText = `
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    background: var(--card); /* Using CSS variables for theme consistency */
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 20px;
-    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
-    z-index: 10000;
-    max-width: 90%;
-    text-align: center;
-    color: var(--text);
-  `;
+        const messageBox = document.createElement('div');
+        messageBox.id = 'customMessageBox';
+        messageBox.style.cssText = `
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 20px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            z-index: 10000;
+            max-width: 90%;
+            width: 320px;
+            text-align: center;
+            color: var(--text);
+        `;
 
-  messageBox.innerHTML = `
-    <h3 style="margin-top:0; color: var(--text);">${title}</h3>
-    <p>${message}</p>
-    <button id="messageBoxCloseBtn" class="primary-btn" style="margin-top:15px;">OK</button>
-  `;
+        const buttonsHtml = isConfirm
+            ? `<button id="messageBoxConfirmBtn" class="primary-btn" style="margin-right: 8px; background: var(--status-disconnected); color: var(--text);">Delete</button>
+               <button id="messageBoxCancelBtn" class="primary-btn send-file-btn">Cancel</button>`
+            : `<button id="messageBoxCloseBtn" class="primary-btn" style="margin-top:15px;">OK</button>`;
 
-  document.body.appendChild(messageBox);
+        messageBox.innerHTML = `
+            <h3 style="margin-top:0; color: var(--text);">${title}</h3>
+            <p style="margin: 10px 0 20px;">${message}</p>
+            <div>${buttonsHtml}</div>
+        `;
 
-  document.getElementById('messageBoxCloseBtn').addEventListener('click', () => {
-    messageBox.remove();
-  });
+        document.body.appendChild(messageBox);
+
+        const confirmBtn = document.getElementById('messageBoxConfirmBtn');
+        const cancelBtn = document.getElementById('messageBoxCancelBtn');
+        const closeBtn = document.getElementById('messageBoxCloseBtn');
+
+        if (isConfirm) {
+            confirmBtn.addEventListener('click', () => {
+                messageBox.remove();
+                resolve(true);
+            });
+            cancelBtn.addEventListener('click', () => {
+                messageBox.remove();
+                resolve(false);
+            });
+        } else {
+            closeBtn.addEventListener('click', () => {
+                messageBox.remove();
+                resolve(true);
+            });
+        }
+    });
 }
+
 
 // Copy join link functionality
 if (copyLinkBtn && joinLinkA) {
   copyLinkBtn.addEventListener('click', () => {
     const link = joinLinkA.href;
     if (link && link !== '#') {
-      if (navigator.clipboard) {
-        // Use modern Clipboard API if available
         navigator.clipboard.writeText(link).then(() => {
-          copyLinkBtn.title = 'Copied!';
-          const icon = copyLinkBtn.querySelector('.material-icons');
-          if (icon) {
-            icon.textContent = 'check';
-            icon.style.color = '#267c26'; // Green checkmark
-            setTimeout(() => {
-              icon.textContent = 'content_copy';
-              icon.style.color = '';
-              copyLinkBtn.title = 'Copy link';
-            }, 1200);
-          }
-        }).catch(err => {
-          console.error('Failed to copy to clipboard:', err);
-          // Fallback for older browsers or restricted environments
-          const tempInput = document.createElement('input');
-          tempInput.value = link;
-          document.body.appendChild(tempInput);
-          tempInput.select();
-          document.execCommand('copy'); // Deprecated but widely supported fallback
-          document.body.removeChild(tempInput);
           copyLinkBtn.title = 'Copied!';
           const icon = copyLinkBtn.querySelector('.material-icons');
           if (icon) {
@@ -1330,27 +1366,20 @@ if (copyLinkBtn && joinLinkA) {
               copyLinkBtn.title = 'Copy link';
             }, 1200);
           }
+        }).catch(err => {
+          console.error('Failed to copy to clipboard, using fallback:', err);
+          const tempInput = document.createElement('input');
+          tempInput.value = link;
+          document.body.appendChild(tempInput);
+          tempInput.select();
+          document.execCommand('copy');
+          document.body.removeChild(tempInput);
+          const icon = copyLinkBtn.querySelector('.material-icons');
+          if (icon) {
+            icon.textContent = 'check';
+            setTimeout(() => { icon.textContent = 'content_copy'; }, 1200);
+          }
         });
-      } else {
-        // Fallback for older browsers (document.execCommand('copy') is still widely supported)
-        const tempInput = document.createElement('input');
-        tempInput.value = link;
-        document.body.appendChild(tempInput);
-        tempInput.select();
-        document.execCommand('copy');
-        document.body.removeChild(tempInput);
-        copyLinkBtn.title = 'Copied!';
-        const icon = copyLinkBtn.querySelector('.material-icons');
-        if (icon) {
-          icon.textContent = 'check';
-          icon.style.color = '#267c26';
-          setTimeout(() => {
-            icon.textContent = 'content_copy';
-            icon.style.color = '';
-            copyLinkBtn.title = 'Copy link';
-          }, 1200);
-        }
-      }
     }
   });
 }
@@ -1359,3 +1388,4 @@ if (copyLinkBtn && joinLinkA) {
 document.addEventListener('DOMContentLoaded', () => {
   renderFileTransferHistory();
 });
+
