@@ -15,7 +15,7 @@
 
   /* Radii & Transitions */
   --radius-outer: 32px; /* For main containers */
-  --radius-inner: calc(var(--radius-outer) - var(--card-padding)); /* Adjusts inner radius based on outer and padding */
+  --radius-inner: calc(var(--radius-outer) - var(--card-padding));
   --radius-pill: 999px; /* For fully rounded buttons */
   --radius-round: 50%; /* For circular elements */
   --transition: 0.2s ease;
@@ -135,7 +135,7 @@ body {
   gap: var(--space-lg);
 }
 
-.text-buttons-container { /* Changed from .text-button-group to .text-buttons-container based on index.html */
+.text-buttons-container {
   display: flex;
   gap: var(--space-sm);
   justify-content: center;
@@ -211,7 +211,7 @@ button {
 }
 .remove-file-btn:hover,
 .file-delete-btn:hover {
-    background: var(--status-disconnected); /* Use a red color on hover */
+    background: var(--status-disconnected);
     color: var(--text) !important;
 }
 
@@ -312,55 +312,35 @@ main {
 /* --- Connection Status Animation --- */
 #connection-status-overlay {
   position: fixed;
-  /* This combination of properties ensures the element is perfectly centered */
   top: 0;
   bottom: 0;
   left: 0;
   right: 0;
   margin: auto;
-
-  /* Start as a small dot */
   width: 1px;
   height: 1px;
-
   pointer-events: none;
   z-index: 9999;
   border-radius: 50%;
-
-  /* Start scaled down and invisible. translate() is not needed with this centering method. */
   transform: scale(0);
   opacity: 0;
-
-  /* Make sure background covers the area when scaled */
   background-size: cover;
 }
 
 .animate-connect {
-  /* A gradient from a dark green, to a vibrant yellow, then fading out */
   background-image: radial-gradient(circle, hsla(120, 80%, 45%, 0.4) 0%, hsla(60, 95%, 60%, 0.5) 40%, transparent 70%);
   animation: expand-and-fade 2.2s ease-out;
 }
 
 .animate-disconnect {
-  /* A gradient from a rich red, to a vibrant orange, then fading out */
   background-image: radial-gradient(circle, hsla(0, 85%, 55%, 0.4) 0%, hsla(30, 95%, 60%, 0.5) 40%, transparent 70%);
   animation: expand-and-fade 2.2s ease-out;
 }
 
 @keyframes expand-and-fade {
-  0% {
-    transform: scale(0);
-    opacity: 0;
-  }
-  25% {
-    /* Fade in to a subtle peak opacity */
-    opacity: 0.7;
-  }
-  100% {
-    /* Scale up to cover more than the screen and fade out */
-    transform: scale(3000);
-    opacity: 0;
-  }
+  0% { transform: scale(0); opacity: 0; }
+  25% { opacity: 0.7; }
+  100% { transform: scale(3000); opacity: 0; }
 }
 
 
@@ -430,7 +410,7 @@ label {
   white-space: nowrap;
   font-size: var(--font-sm);
   text-align: center;
-  min-width: 0; /* Allow the link to shrink */
+  min-width: 0;
 }
 
 .qr-container {
@@ -438,7 +418,7 @@ label {
   flex-direction: column;
   align-items: center;
   width: 100%;
-  margin: var(--space-sm) auto;
+  margin: 0 auto var(--space-sm); /* Removed top margin, kept bottom */
   padding: var(--space-xs);
 }
 
@@ -466,15 +446,6 @@ label {
   width: auto;
   height: auto;
   display: block;
-}
-
-.qr-text {
-  margin-top: var(--space-xs);
-  color: var(--text-secondary);
-  font-size: var(--font-sm);
-  text-align: center;
-  width: 100%;
-  padding: 0 var(--space-xs);
 }
 
 .peers-section {
@@ -528,21 +499,10 @@ label {
   text-align: right;
 }
 
-.peer-status.connected {
-  color: var(--status-connected);
-}
-
-.peer-status.connecting {
-  color: orange; /* Added for connecting status */
-}
-
-.peer-status.disconnected {
-  color: var(--status-disconnected);
-}
-
-.peer-status.session_ended {
-  color: var(--status-disconnected); /* Use disconnected color for session ended */
-}
+.peer-status.connected { color: var(--status-connected); }
+.peer-status.connecting { color: orange; }
+.peer-status.disconnected { color: var(--status-disconnected); }
+.peer-status.session_ended { color: var(--status-disconnected); }
 
 .file-messages-area {
   display: flex;
@@ -571,7 +531,6 @@ label {
 .message-username {
   font-weight: 500;
   font-size: var(--font-sm);
-  /* Color is set via inline style in JS */
 }
 
 .message-tile.file {
@@ -589,7 +548,7 @@ label {
 
 .file-tile-content {
   flex-grow: 1;
-  min-width: 0; /* Prevents overflow with long file names in flexbox */
+  min-width: 0;
   text-align: left;
 }
 
@@ -597,7 +556,7 @@ label {
   display: flex;
   flex-direction: column;
   gap: var(--space-xs);
-  flex-shrink: 0; /* Prevent buttons from shrinking */
+  flex-shrink: 0;
 }
 
 @keyframes fadeIn {
@@ -668,7 +627,7 @@ label {
   gap: var(--space-sm);
   width: 100%;
   max-width: 400px;
-  margin: 0 auto;
+  margin: 0 auto var(--space-sm); /* Added margin-bottom here */
 }
 
 .username-section input[type="text"] {
@@ -693,7 +652,7 @@ label {
 
 /* --- Scrollbar --- */
 ::-webkit-scrollbar {
-  display: none; /* For Chrome, Safari, and Opera */
+  display: none;
 }
 
 ::selection {
@@ -710,36 +669,13 @@ label {
     --screen-margin: 12px;
     --card-padding: 12px;
   }
-
-  .top-bar {
-    padding: 6px 12px;
-  }
-
-  .theme-button-wrapper {
-    padding: 0 12px;
-    gap: var(--space-md);
-  }
-
-  main {
-    padding: 0 12px;
-  }
-
-  .file-name {
-    max-width: 120px;
-  }
-
-  .username-section form {
-    flex-direction: column;
-    gap: var(--space-xs);
-  }
-
-  .username-section input[type="text"] {
-    width: 100%;
-  }
-
-  .set-username-btn {
-    width: 100%;
-  }
+  .top-bar { padding: 6px 12px; }
+  .theme-button-wrapper { padding: 0 12px; gap: var(--space-md); }
+  main { padding: 0 12px; }
+  .file-name { max-width: 120px; }
+  .username-section form { flex-direction: column; gap: var(--space-xs); }
+  .username-section input[type="text"] { width: 100%; }
+  .set-username-btn { width: 100%; }
 }
 
 @media (max-width: 480px) {
@@ -747,59 +683,30 @@ label {
     --screen-margin: 8px;
     --card-padding: 8px;
   }
-
-  .top-bar {
-    padding: 4px 8px;
-  }
-
+  .top-bar { padding: 4px 8px; }
   .theme-button-wrapper {
     padding: 0 8px;
     flex-direction: column;
     gap: var(--space-xs);
     align-items: center;
   }
-
-  main {
-    padding: 0 8px;
-  }
-
+  main { padding: 0 8px; }
   .primary-btn {
     padding: 6px 12px;
     font-size: var(--font-sm);
     min-width: 90px;
     height: 30px;
   }
-
   .file-meta-row {
     flex-direction: column;
     align-items: flex-start;
     gap: 4px;
   }
-
-  .file-name {
-    max-width: 96px;
-  }
-
-  .join-link-row {
-    /* Removed flex-direction: column; */
-    gap: var(--space-xs); /* Adjusted gap for better spacing */
-    height: auto;
-    padding: 8px;
-  }
-
-  .text-buttons-container { /* Changed from .text-button-group to .text-buttons-container based on index.html */
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  #peersList {
-    max-height: 120px;
-  }
-
-  #qrcode {
-    width: 128px;
-    height: 128px;
-  }
+  .file-name { max-width: 96px; }
+  .join-link-row { gap: var(--space-xs); height: auto; padding: 8px; }
+  .text-buttons-container { flex-direction: column; gap: 4px; }
+  #peersList { max-height: 120px; }
+  #qrcode { width: 128px; height: 128px; }
 }
 
 
@@ -807,104 +714,97 @@ label {
    About & Terms Page Specific Styles
    ================================ */
 
-/* Card and main content adjustments - keep default card centering, but adjust padding */
 main.centered-container .card {
-  padding: var(--space-md); /* Keep padding adjustment */
+  padding: var(--space-md);
 }
 
-/* Align main H2 headings to the center on About/Terms pages */
 main.centered-container .card h2 {
   text-align: center;
-  margin-bottom: var(--space-lg); /* Increased space below main heading */
-  color: var(--text); /* Main heading remains strong */
+  margin-bottom: var(--space-lg);
+  color: var(--text);
 }
 
-/* Align all other headings (H3) and text content to the left */
 main.centered-container .card h3 {
   text-align: left;
-  margin-top: var(--space-lg); /* Increased space above subheadings */
-  margin-bottom: var(--space-sm); /* Space below subheadings */
-  color: var(--text); /* Subheadings remain strong */
+  margin-top: var(--space-lg);
+  margin-bottom: var(--space-sm);
+  color: var(--text);
 }
 
 .intro-text {
   text-align: left;
-  margin-bottom: var(--space-md); /* Space below intro text */
-  color: var(--text-secondary); /* Softer shade for intro text */
+  margin-bottom: var(--space-md);
+  color: var(--text-secondary);
 }
 
 .last-updated {
   text-align: left;
-  margin-bottom: var(--space-md); /* Space below last updated */
-  color: var(--text-muted); /* Even softer shade for last updated */
+  margin-bottom: var(--space-md);
+  color: var(--text-muted);
 }
 
 .tech-section p,
 .contact-section p,
 .terms-section p {
   text-align: left;
-  margin-bottom: var(--space-sm); /* Space below general paragraphs */
-  color: var(--text-secondary); /* Softer shade for general paragraphs */
+  margin-bottom: var(--space-sm);
+  color: var(--text-secondary);
 }
 
-/* List items should also be left-aligned */
 .process-steps,
 .terms-section ul {
-  text-align: left; /* This will align the list items */
-  margin-bottom: var(--space-md); /* Space below lists */
-  padding-left: var(--space-md); /* Ensure consistent indentation for the list container */
+  text-align: left;
+  margin-bottom: var(--space-md);
+  padding-left: var(--space-md);
 }
 
 .process-steps li,
 .terms-section li {
-  color: var(--text-secondary); /* Softer shade for list item text */
-  margin-bottom: var(--space-xs); /* Reduced space between list items */
+  color: var(--text-secondary);
+  margin-bottom: var(--space-xs);
   line-height: 1.6;
-  padding-left: 0; /* Removed conflicting padding from list items */
+  padding-left: 0;
 }
 
-
-/* Feature list improvements */
 .feature-list {
   list-style: none;
   padding: 0;
   margin: var(--space-md) 0;
-  display: grid; /* Use grid for symmetric layout */
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); /* Responsive columns */
-  gap: var(--space-sm); /* Gap between tiles */
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--space-sm);
 }
 
 .feature-list li {
   display: flex;
-  flex-direction: column; /* Stack icon, strong, and p */
-  align-items: flex-start; /* Align content to the left within the tile */
-  text-align: left; /* Align text to the left within the tile */
-  gap: var(--space-xs); /* Space between icon, heading, and description */
-  padding: var(--space-md); /* More padding for a better tile look */
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+  gap: var(--space-xs);
+  padding: var(--space-md);
   background: var(--surface);
   border-radius: var(--radius-outer);
   border: 1px solid var(--border);
-  height: auto; /* Allow height to adjust */
+  height: auto;
 }
 
 .feature-list li strong {
-  margin-top: var(--space-xxs); /* Small space between icon and heading */
-  display: block; /* Ensure strong takes full width for proper text alignment */
-  color: var(--text); /* Feature titles remain strong */
+  margin-top: var(--space-xxs);
+  display: block;
+  color: var(--text);
 }
 
 .feature-list li p {
   font-size: var(--font-sm);
-  color: var(--text-secondary); /* Feature descriptions use a softer shade */
+  color: var(--text-secondary);
 }
 
 .feature-icon {
-  font-size: 28px; /* Slightly larger icons for features */
-  color: var(--text); /* Feature icons remain prominent */
-  margin-top: 0; /* Reset margin-top, flexbox handles alignment */
+  font-size: 28px;
+  color: var(--text);
+  margin-top: 0;
 }
 
-/* Contact section improvements */
 .contact-section {
   margin-top: var(--space-lg);
   padding-top: var(--space-md);
@@ -919,21 +819,20 @@ main.centered-container .card h3 {
 }
 
 .contact-email .material-icons {
-  margin-right: var(--space-xxs); /* Small space to the right of the icon */
+  margin-right: var(--space-xxs);
   vertical-align: middle;
-  color: var(--text-secondary); /* Softer shade for contact email icon */
+  color: var(--text-secondary);
 }
 
 .contact-email a {
-  color: var(--text-secondary); /* Softer shade for email link */
-  text-decoration: none; /* Ensure no underline */
+  color: var(--text-secondary);
+  text-decoration: none;
 }
 
 .contact-email a:hover {
-  color: var(--text); /* Darker on hover */
+  color: var(--text);
 }
 
-/* Terms section specific improvements */
 .terms-section {
   margin-bottom: var(--space-lg);
 }
@@ -944,43 +843,22 @@ main.centered-container .card h3 {
   margin: var(--space-sm) 0;
 }
 
-/* Icon consistency */
 .material-icons {
   vertical-align: middle;
-  font-size: 20px; /* Default size */
+  font-size: 20px;
 }
 
-/* Responsive adjustments */
 @media (max-width: 768px) {
-  main.centered-container .card {
-    padding: var(--space-sm);
-  }
-
-  .feature-list {
-    grid-template-columns: 1fr; /* Single column on smaller screens */
-  }
-  .feature-list li {
-    padding: var(--space-sm);
-  }
-
-  .process-steps,
-  .terms-section ul {
-    padding-left: var(--space-sm);
-  }
+  main.centered-container .card { padding: var(--space-sm); }
+  .feature-list { grid-template-columns: 1fr; }
+  .feature-list li { padding: var(--space-sm); }
+  .process-steps, .terms-section ul { padding-left: var(--space-sm); }
 }
 
 @media (max-width: 480px) {
-  .feature-list li {
-    align-items: flex-start; /* Revert to flex-start for small screens if content is long */
-    text-align: left; /* Align text left on small screens */
-  }
-
-  .contact-email {
-    flex-direction: row;
-    align-items: center;
-  }
+  .feature-list li { align-items: flex-start; text-align: left; }
+  .contact-email { flex-direction: row; align-items: center; }
 }
-
 
 .session-info-card {
   position: relative;
@@ -999,7 +877,6 @@ main.centered-container .card h3 {
   border-radius: var(--radius-inner);
 }
 
-/* Show a separator border on the header ONLY when the card is expanded */
 .session-info-card:not(.collapsed) .collapsible-header {
   border-bottom: 1px solid var(--border);
 }
@@ -1015,15 +892,15 @@ main.centered-container .card h3 {
 
 .collapsible-content {
   padding: var(--space-sm);
-  max-height: 500px; /* A large enough value for expanded state */
-  overflow: hidden; /* Hide overflow during transition */
-  transition: max-height 0.3s ease-out, padding 0.3s ease-out; /* Smooth transition for height and padding */
+  max-height: 500px;
+  overflow: hidden;
+  transition: max-height 0.3s ease-out, padding 0.3s ease-out;
 }
 
 .session-info-card.collapsed .collapsible-content {
-  max-height: 0; /* Collapse to 0 height */
-  padding-top: 0; /* Remove padding when collapsed */
-  padding-bottom: 0; /* Remove padding when collapsed */
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
 }
 
 #toggleSessionInfoBtn .material-icons {
@@ -1038,9 +915,9 @@ main.centered-container .card h3 {
   transform: rotate(0deg);
 }
 
-/* Adjust existing styles to accommodate new layout */
+/* Adjusted spacing for new order */
 .session-details {
-  margin-top: 0;
+  margin-top: var(--space-sm); /* Now at bottom, needs top margin */
 }
 
 .join-link-row {

@@ -1,7 +1,27 @@
 // main.js – PeerJS File Transfer Application
-// This file integrates PeerJS logic with the file transfer features and manages UI.
+// High-performance, Resilient Logic:
+// 1. Connectivity: Watchdog timer, Auto-reconnect, Public STUN servers
+// 2. Firehose Transfer: 16KB chunks, 1024 window, Cumulative ACKs
+// 3. Dual-Channel: Persistent signaling, temporary file pipes
 
-// The theme logic has been moved to theme.js to be shared across all pages.
+// --------------- Configuration & Constants ---------------
+const PEER_CONFIG = {
+  debug: 1,
+  config: {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:global.stun.twilio.com:3478' }
+    ]
+  }
+};
+
+const CONNECTION_WATCHDOG_MS = 15000; // 15 seconds to connect or die
+const RECONNECT_BASE_DELAY = 1000;
+const CHUNK_SIZE = 16 * 1024; // 16KB - Sweet spot for WebRTC
+const MAX_WINDOW_SIZE = 1024; // Allow ~16MB in flight
+const ACK_INTERVAL = 16; // Send ACK every 16 chunks to reduce CPU load
 
 // --------------- PeerJS + UI helpers ---------------
 function getPeerIdFromURL() {
@@ -25,7 +45,7 @@ let peer = null;
 let myPeerId = null;
 let joinPeerId = getPeerIdFromURL();
 let isHost = false;
-let mesh = {};                // pid → { conn, status, backoff, lastPing }
+let mesh = {};                // pid → { conn, status, backoff, lastPing, reconnectTimer, watchdogTimer }
 let myUsername = "";
 let peerUsernames = {};        // pid → username
 let assignedNames = {};
@@ -34,13 +54,13 @@ let fileTransferHistory = []; // History for file messages only
 let knownMsgIds = new Set();
 let hostStatusOverrides = null;
 const fileTransfers = {}; // State for ongoing file transfers
-let encryptionKeys = {}; // Stores CryptoKey objects for sending, or imported keys for receiving (fileMsgId -> CryptoKey)
+let encryptionKeys = {}; // fileMsgId -> CryptoKey
 let preSessionFiles = []; // To store files selected before starting a session
+let isHostSessionClosed = false; // Flag to track if host explicitly closed session
 
 
 // --------------- DOM refs ---------------
 const startBtn            = document.getElementById("startBtn");
-const startSection        = document.getElementById("startSection"); // This section is removed from HTML but ref is kept to avoid errors if logic expects it
 const sessionInfoSection  = document.getElementById("sessionInfoSection");
 const linkSection         = document.getElementById("linkSection");
 const joinLinkA           = document.getElementById("joinLink");
@@ -56,12 +76,11 @@ const fileTransferSection = document.getElementById("fileTransferSection");
 const fileBtn             = document.getElementById("fileBtn");
 const fileInput           = document.getElementById("fileInput");
 const fileMessagesArea    = document.getElementById("fileMessagesArea");
-const connectionStatusOverlay = document.getElementById("connection-status-overlay");
-// New DOM references for collapsible session info
 const sessionInfoHeader = document.getElementById("sessionInfoHeader");
 const sessionInfoContent = document.getElementById("sessionInfoContent");
 const toggleSessionInfoBtn = document.getElementById("toggleSessionInfoBtn");
 const connectedPeerName = document.getElementById("connectedPeerName");
+const connectionStatusOverlay = document.getElementById("connection-status-overlay");
 
 
 // Username helpers
@@ -69,7 +88,7 @@ function assignDefaultUsernameToPeer(pid) {
   if (pid === myPeerId && isHost) { assignedNames[pid] = "Host"; return "Host"; }
   if (assignedNames[pid]) return assignedNames[pid];
   userCount += 1;
-  const uname = "Peer " + userCount;
+  const uname = "Participant " + userCount;
   assignedNames[pid] = uname;
   return uname;
 }
@@ -80,7 +99,7 @@ function assignHostName() {
   usernameInput.value = myUsername;
 }
 
-// --------------- UI Feedback ---------------
+// --------------- UI Feedback (Animation) ---------------
 /**
  * Triggers a subtle, full-screen pulse animation for connection status changes.
  * @param {'connect' | 'disconnect'} type - The type of event.
@@ -104,13 +123,7 @@ function triggerConnectionAnimation(type) {
   }, 2200); // Must match the animation duration in CSS
 }
 
-
 // --------------- File Message UI ---------------
-/**
- * Formats file size in bytes into a human-readable string (KB, MB, GB).
- * @param {number} bytes The file size in bytes.
- * @returns {string} Formatted file size.
- */
 function formatFileSize(bytes) {
   if (bytes < 1024) return bytes + ' B';
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
@@ -118,26 +131,15 @@ function formatFileSize(bytes) {
   return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
 }
 
-/**
- * Adds a file message tile to the UI.
- * @param {object} options - File message details.
- * @param {string} options.fileMsgId - Unique ID for the file message.
- * @param {string} options.fileName - Name of the file.
- * @param {number} options.fileSize - Size of the file in bytes.
- * @param {string} options.senderId - Peer ID of the sender.
- * @param {string} options.username - Username of the sender.
- * @param {boolean} [options.encrypted=false] - Whether the file is encrypted.
- */
 function addFileMessage({ fileMsgId, fileName, fileSize, senderId, username, encrypted = false }) {
   if (!fileMessagesArea) return;
-  // Prevent duplicate messages
   if (fileMessagesArea.querySelector(`[data-file-msg-id="${fileMsgId}"]`)) return;
 
   const isSender = senderId === myPeerId;
   const div = document.createElement('div');
   div.className = 'message-tile file ' + (isSender ? 'outgoing' : 'incoming');
-  div.dataset.fileMsgId = fileMsgId; // Store file message ID for easy lookup
-  div.setAttribute('data-file-msg-id', fileMsgId); // Also set as attribute for CSS selectors
+  div.dataset.fileMsgId = fileMsgId;
+  div.setAttribute('data-file-msg-id', fileMsgId);
   div.innerHTML = `
     <div class="file-tile-content">
         <div class="message-header">
@@ -167,19 +169,9 @@ function addFileMessage({ fileMsgId, fileName, fileSize, senderId, username, enc
     </div>
   `;
   fileMessagesArea.appendChild(div);
-  fileMessagesArea.scrollTop = fileMessagesArea.scrollHeight; // Scroll to bottom
+  fileMessagesArea.scrollTop = fileMessagesArea.scrollHeight;
 }
 
-
-/**
- * Updates the UI of a specific file transfer tile.
- * @param {HTMLElement} tile - The file message tile DOM element.
- * @param {object} options - Update details.
- * @param {string} options.status - Current status ('downloading', 'completed', 'canceled', 'ready').
- * @param {number} [options.progress] - Progress as a float (0 to 1).
- * @param {string} [options.error] - Error message if transfer failed.
- * @param {string} [options.reason] - Reason for cancellation ('user', 'sender', 'connection').
- */
 function updateFileTileUI(tile, { status, progress, error, reason }) {
   const downloadBtn = tile.querySelector('.file-download-link');
   const cancelBtn = tile.querySelector('.file-cancel-link');
@@ -190,42 +182,36 @@ function updateFileTileUI(tile, { status, progress, error, reason }) {
   if (status === 'downloading') {
     if (downloadBtn) {
         downloadBtn.disabled = true;
-        downloadBtn.classList.add('hidden'); // Hide download button while downloading
+        downloadBtn.classList.add('hidden');
     }
     cancelBtn.classList.remove('hidden');
     progressBar.classList.remove('hidden');
     progressInner.style.width = Math.round(progress * 100) + '%';
-    statusMsg.textContent = '⬇️ Downloading...';
+    statusMsg.textContent = '⬇️ Receiving file...';
   } else if (status === 'completed') {
     if (downloadBtn) {
-        downloadBtn.disabled = false; // Allow re-downloading
+        downloadBtn.disabled = false;
         downloadBtn.classList.remove('hidden');
     }
     cancelBtn.classList.add('hidden');
     progressBar.classList.add('hidden');
-    statusMsg.textContent = '✅ Download complete';
+    statusMsg.textContent = '✅ File saved';
   } else if (status === 'canceled') {
     if (downloadBtn) {
         downloadBtn.disabled = false;
-        downloadBtn.classList.remove('hidden'); // Show download button when cancelled
+        downloadBtn.classList.remove('hidden');
     }
     cancelBtn.classList.add('hidden');
     progressBar.classList.add('hidden');
-    if (reason === 'user') {
-      statusMsg.textContent = '❌ Canceled by you';
-    } else if (reason === 'sender') {
-      statusMsg.textContent = '🚫 Sender canceled the transfer';
-    } else if (reason === 'connection') {
-      statusMsg.textContent = '⚠️ Connection lost before completion';
-    } else if (error) {
-      statusMsg.textContent = '❗ Failed: ' + error;
-    } else {
-      statusMsg.textContent = '❌ Canceled';
-    }
-  } else { // 'ready' or initial state
+    if (reason === 'user') statusMsg.textContent = '❌ You canceled';
+    else if (reason === 'sender') statusMsg.textContent = '🚫 Peer canceled';
+    else if (reason === 'connection') statusMsg.textContent = '⚠️ Connection dropped';
+    else if (error) statusMsg.textContent = '❗ Error: ' + error;
+    else statusMsg.textContent = '❌ Canceled';
+  } else {
     if (downloadBtn) {
         downloadBtn.disabled = false;
-        downloadBtn.classList.remove('hidden'); // Ensure download button is visible in ready state
+        downloadBtn.classList.remove('hidden');
     }
     cancelBtn.classList.add('hidden');
     progressBar.classList.add('hidden');
@@ -243,15 +229,12 @@ function getPeerStatus(pid) {
     if (entry.conn && entry.conn.open) return "connected";
     return "disconnected";
   }
-  // If we have explicit status info from host, use it
   if (hostStatusOverrides) {
     if (pid === joinPeerId) return hostStatusOverrides[pid] || "disconnected";
     return hostStatusOverrides[pid] || "disconnected";
   }
-  // If we are still connecting, show connecting
   const entry = mesh[pid];
   if (entry && entry.status === "connecting") return "connecting";
-  // Only show session ended if we know for sure (after disconnect event)
   if (pid === joinPeerId && window._hostSessionEnded) return "session_ended";
   return "disconnected";
 }
@@ -260,14 +243,68 @@ function updatePeersList() {
   const list = peersList;
   if (!list) return;
 
+  // --- SPECIAL HANDLING FOR PEERS (Non-Host) ---
+  // If we are a peer and we are disconnected or the host closed session
+  if (!isHost && joinPeerId) {
+    const hostStatus = getPeerStatus(joinPeerId);
+
+    // CASE 1: Host explicitly closed session
+    if (isHostSessionClosed) {
+        list.innerHTML = `
+            <li style="justify-content: center; color: var(--status-disconnected); font-weight: 500;">
+                ❌ Host closed the session
+            </li>
+        `;
+        connectedPeerName.textContent = "Session Ended";
+        show(peersSection);
+        if (sessionInfoSection) sessionInfoSection.classList.remove("collapsed");
+        return; // Stop processing normal list
+    }
+
+    // CASE 2: Disconnected (Network error / Timeout)
+    if (hostStatus === 'disconnected' || hostStatus === 'offline') {
+        list.innerHTML = `
+            <li style="flex-direction: column; height: auto; gap: 8px; padding: 16px;">
+                <span style="color: var(--status-disconnected); font-weight: 500;">
+                    ⚠️ You have been disconnected
+                </span>
+                <button id="manualReconnectBtn" class="primary-btn" style="height: 32px; font-size: 13px; width: 100%;">
+                    Reconnect
+                </button>
+            </li>
+        `;
+
+        // Bind the reconnect button
+        // We use setTimeout to ensure the element is in DOM
+        setTimeout(() => {
+            const btn = document.getElementById('manualReconnectBtn');
+            if (btn) {
+                btn.onclick = () => {
+                    btn.textContent = 'Reconnecting...';
+                    btn.disabled = true;
+                    // Reset backoff and try immediately
+                    if (mesh[joinPeerId]) mesh[joinPeerId].backoff = 0;
+                    tryConnectTo(joinPeerId, 0);
+                };
+            }
+        }, 0);
+
+        connectedPeerName.textContent = "Offline";
+        show(peersSection);
+        if (sessionInfoSection) sessionInfoSection.classList.remove("collapsed");
+        return; // Stop processing normal list
+    }
+  }
+
+  // --- STANDARD LIST RENDERING (Host or Connected Peer) ---
   const entries = Object.entries(peerUsernames);
   const hostPid = isHost ? myPeerId : joinPeerId;
   const hostEntry = entries.find(([pid, _]) => pid === hostPid);
   const peerEntries = entries.filter(([pid, _]) => pid !== hostPid);
 
   peerEntries.sort((a, b) => {
-    const mA = /^Peer (\d+)$/.exec(a[1]);
-    const mB = /^Peer (\d+)$/.exec(b[1]);
+    const mA = /^Participant (\d+)$/.exec(a[1]);
+    const mB = /^Participant (\d+)$/.exec(b[1]);
     if (mA && mB) return Number(mA[1]) - Number(mB[1]);
     if (mA) return -1;
     if (mB) return 1;
@@ -279,11 +316,13 @@ function updatePeersList() {
     const [pid, uname] = hostEntry;
     let status = getPeerStatus(pid);
     if (!isHost && !hostStatusOverrides && pid === joinPeerId) status = "connecting";
+    // Check if actually connected to host locally
+    if(!isHost && pid === joinPeerId && mesh[pid] && mesh[pid].status === 'connected') status = 'connected';
+
     let statusText =
       status === "connected" ? "Connected" :
       status === "connecting" ? "Connecting..." :
-      status === "session_ended" ? "Session Ended" :
-      "Disconnected";
+      status === "session_ended" ? "Session Ended" : "Offline";
     let statusClass = status;
     const li = document.createElement("li");
     li.innerHTML = `
@@ -297,8 +336,7 @@ function updatePeersList() {
     let statusText =
       status === "connected" ? "Connected" :
       status === "connecting" ? "Connecting..." :
-      status === "session_ended" ? "Session Ended" :
-      "Disconnected";
+      status === "session_ended" ? "Session Ended" : "Offline";
     let statusClass = status;
     const li = document.createElement("li");
     li.innerHTML = `
@@ -308,26 +346,33 @@ function updatePeersList() {
     list.appendChild(li);
   });
 
-  // Update the connected peer name in the collapsed header and show/hide peers section
+  let hasActiveConnection = false;
+
   if (isHost) {
     const connectedPeersCount = Object.keys(mesh).filter(pid => mesh[pid].status === "connected" && pid !== myPeerId).length;
     if (connectedPeersCount > 0) {
-      connectedPeerName.textContent = `${connectedPeersCount} peer${connectedPeersCount !== 1 ? 's' : ''}`;
+      connectedPeerName.textContent = `${connectedPeersCount} active`;
       show(peersSection);
+      hasActiveConnection = true;
     } else {
-      connectedPeerName.textContent = "No peers";
+      connectedPeerName.textContent = "Waiting for connections...";
       hide(peersSection);
+      hasActiveConnection = false;
     }
   } else {
-    // For peers, if connected to host, show host's name, otherwise 'Disconnected'
     if (getPeerStatus(joinPeerId) === "connected") {
       connectedPeerName.textContent = peerUsernames[joinPeerId] || "Host";
       show(peersSection);
+      hasActiveConnection = true;
     } else {
-      connectedPeerName.textContent = "Disconnected";
+      connectedPeerName.textContent = "Offline";
       hide(peersSection);
+      hasActiveConnection = false;
     }
   }
+
+  // NOTE: Auto-expand when no connection logic is handled here
+  // But we want to auto-CLOSE when connected. That logic is inside setupConnHandlers -> conn.on('open')
 }
 
 function getAllStatuses() {
@@ -346,23 +391,13 @@ function broadcastUserListWithStatus() {
   });
 }
 
-// Function to handle the collapsing/expanding of session info
 function toggleSessionInfo() {
   sessionInfoSection.classList.toggle("collapsed");
 }
-
-// Add event listener for the toggle button
-if (toggleSessionInfoBtn) {
-  toggleSessionInfoBtn.addEventListener("click", toggleSessionInfo);
-}
+if (toggleSessionInfoBtn) toggleSessionInfoBtn.addEventListener("click", toggleSessionInfo);
 
 
 // --------------- Networking ---------------
-/**
- * Broadcasts data to all connected peers, optionally excluding one.
- * @param {object} msg - The message object to send.
- * @param {string} [exceptPeerId=null] - Optional peer ID to exclude from broadcast.
- */
 function broadcastData(msg, exceptPeerId = null) {
   Object.entries(mesh).forEach(([pid, ent]) => {
     if (pid === exceptPeerId) return;
@@ -370,7 +405,6 @@ function broadcastData(msg, exceptPeerId = null) {
       try { ent.conn.send(msg); } catch (_) {}
     }
   });
-  // If the message is a file message, add it to history if not already present
   if (msg && msg.type === 'file') {
     if (!fileTransferHistory.find(m => m.type === 'file' && m.fileMsgId === msg.fileMsgId)) {
       fileTransferHistory.push(msg);
@@ -378,14 +412,9 @@ function broadcastData(msg, exceptPeerId = null) {
   }
 }
 
-/**
- * Sends the current file transfer history to a newly connected peer.
- * @param {PeerJS.DataConnection} conn - The data connection to send history to.
- */
 function sendHistoryToPeer(conn) {
   if (conn && conn.open) {
     try {
-      // Ensure all file messages in fileTransferHistory have type: 'file' and a msgId
       const historyWithFileType = fileTransferHistory.map(msg => {
         if (msg.fileMsgId) {
           let newMsg = { ...msg };
@@ -395,51 +424,54 @@ function sendHistoryToPeer(conn) {
         }
         return msg;
       });
-      conn.send({
-        type: "history",
-        files: historyWithFileType,
-      });
+      conn.send({ type: "history", files: historyWithFileType });
     } catch (_) {}
   }
 }
 
 // --------------- Connection handlers ---------------
-let originalSetupConnHandlers; // Declare globally or in a scope accessible to both
-
-/**
- * Sets up event handlers for a PeerJS DataConnection.
- * This function is patched to include file transfer specific message handling.
- * @param {PeerJS.DataConnection} conn - The PeerJS DataConnection object.
- * @param {string} pid - The peer ID connected.
- * @param {boolean} isIncoming - True if this is an incoming connection, false if outgoing.
- */
 async function setupConnHandlers(conn, pid, isIncoming) {
-  const entry = (mesh[pid] = mesh[pid] || { status: "connecting", backoff: 1000, lastPing: Date.now() });
+  const entry = mesh[pid];
+  if (!entry) return; // Should exist from tryConnectTo or incoming handler
+
   entry.conn = conn;
-  if (conn._setupDone) return; // Prevent double setup
+  if (conn._setupDone) return;
   conn._setupDone = true;
 
-  conn.on("open", async () => { // Make this handler async
-    // Collapse the session info section when a peer connects
-    if (!sessionInfoSection.classList.contains("collapsed")) {
-      sessionInfoSection.classList.add("collapsed");
-    }
+  // Clear watchdog if it exists
+  if (entry.watchdogTimer) {
+      clearTimeout(entry.watchdogTimer);
+      entry.watchdogTimer = null;
+  }
 
+  conn.on("open", async () => {
     entry.status = "connected";
-    entry.backoff = 1000; // Reset backoff on successful connection
+    entry.backoff = RECONNECT_BASE_DELAY; // Reset backoff
+    if (entry.reconnectTimer) { clearTimeout(entry.reconnectTimer); entry.reconnectTimer = null; }
     entry.lastPing = Date.now();
-    if (!peerUsernames[pid]) peerUsernames[pid] = assignDefaultUsernameToPeer(pid);
-    else assignDefaultUsernameToPeer(pid); // Ensure userCount is correct
-    updatePeersList(); // Update the list when a peer connects
-    show(fileTransferSection); // Show file transfer section on successful connection FOR ALL USERS
+    isHostSessionClosed = false; // Reset close flag on new connection
 
-    // Trigger animation when a new peer joins
+    if (!peerUsernames[pid]) peerUsernames[pid] = assignDefaultUsernameToPeer(pid);
+    else assignDefaultUsernameToPeer(pid);
+
+    // Update List & UI
+    updatePeersList();
+    show(fileTransferSection);
+
+    // Trigger animation
     triggerConnectionAnimation('connect');
 
+    // FORCE CLOSE THE SESSION INFO PANEL AFTER CONNECTION IS ESTABLISHED
+    // We add a small delay to ensure UI updates are processed first
+    setTimeout(() => {
+        if (sessionInfoSection && !sessionInfoSection.classList.contains("collapsed")) {
+            sessionInfoSection.classList.add("collapsed");
+        }
+    }, 500);
+
     if (isHost) {
-      if (Object.keys(peerUsernames).length === 1) assignHostName(); // Assign host name if first peer
+      if (Object.keys(peerUsernames).length === 1) assignHostName();
       if (pid !== myPeerId) {
-        // Send assigned name to the connected peer
         conn.send({
           type: "assignName",
           username: peerUsernames[pid],
@@ -448,21 +480,17 @@ async function setupConnHandlers(conn, pid, isIncoming) {
         });
       }
 
-      // NEW: Process any files selected before the session started
       if (preSessionFiles.length > 0) {
-        fileMessagesArea.innerHTML = ''; // Clear the pre-session file list from UI
+        fileMessagesArea.innerHTML = '';
         const filesToSend = [...preSessionFiles];
-        preSessionFiles = []; // Clear the array
-
-        // Concurrently process and send all pre-session files
+        preSessionFiles = [];
         const sendPromises = filesToSend.map(file => sendFile(file));
         await Promise.all(sendPromises);
       }
 
-      broadcastUserListWithStatus(); // Inform all peers about updated user list
-      sendHistoryToPeer(conn); // Send file transfer history to the new peer
+      broadcastUserListWithStatus();
+      sendHistoryToPeer(conn);
     } else {
-      // If not host, send own username to the host
       if (myUsername && conn.open) {
         conn.send({ type: "username", username: myUsername, reqUserList: true });
       }
@@ -473,66 +501,77 @@ async function setupConnHandlers(conn, pid, isIncoming) {
     entry.status = "disconnected";
     if (hostStatusOverrides) hostStatusOverrides[pid] = "disconnected";
     if (pid === joinPeerId && !isHost) {
-      // If host disconnected and we are a peer, mark session as ended
       window._hostSessionEnded = true;
       hostStatusOverrides = null;
-      updatePeersList(); // Update the list when a peer disconnects
-      triggerConnectionAnimation('disconnect'); // Trigger animation on host disconnect
-      return;
+      triggerConnectionAnimation('disconnect');
     }
-    updatePeersList(); // Update the list when a peer disconnects
-    if (isHost) broadcastUserListWithStatus(); // Inform other peers about disconnect
-    scheduleReconnect(pid); // Attempt to reconnect
-    triggerConnectionAnimation('disconnect'); // Trigger animation on peer disconnect
+    updatePeersList();
+    if (isHost) broadcastUserListWithStatus();
+    scheduleReconnect(pid);
+    triggerConnectionAnimation('disconnect');
   }
+
   conn.on("close", handleDisconnect);
   conn.on("error", handleDisconnect);
   conn.on("data", data => {
-    entry.lastPing = Date.now(); // Reset ping timer
+    entry.lastPing = Date.now();
     if (data && data.type === "ping") { conn.send({ type: "pong" }); return; }
     if (data && data.type === "pong") return;
-    onDataReceived(data, pid, conn); // Pass data to general handler
+    onDataReceived(data, pid, conn);
   });
 }
 
 /**
- * Attempts to establish a connection to a specific peer.
- * @param {string} pid - The peer ID to connect to.
- * @param {number} [backoff=1000] - Initial backoff delay for reconnects.
+ * Robust connection attempt with Watchdog and Auto-Reconnect.
  */
 function tryConnectTo(pid, backoff = 1000) {
-  if (pid === myPeerId) return; // Don't connect to self
+  if (pid === myPeerId) return;
+
   const entry = mesh[pid] || (mesh[pid] = {});
-  if (entry.status === "connected" || (entry.conn && entry.conn.open)) return; // Already connected
-  const conn = peer.connect(pid, { reliable: true }); // Create new connection
-  Object.assign(entry, { conn, status: "connecting", backoff, lastPing: Date.now() });
+  if (entry.status === "connected" || (entry.conn && entry.conn.open)) return;
+
+  // Watchdog: If we are stuck in 'connecting' for 15s, kill it and retry.
+  if (entry.status === "connecting") {
+      // Already connecting, do nothing, let the existing watchdog handle it.
+      return;
+  }
+
+  console.log(`Attempting connection to ${pid}... (Backoff: ${backoff}ms)`);
+  entry.status = "connecting";
   updatePeersList();
-  setupConnHandlers(conn, pid, false); // Set up handlers for outgoing connection
+
+  const conn = peer.connect(pid, { reliable: true });
+  entry.conn = conn;
+
+  // Set Watchdog
+  entry.watchdogTimer = setTimeout(() => {
+      if (entry.status === "connecting") {
+          console.warn(`Connection to ${pid} timed out (Watchdog). Retrying...`);
+          if (conn) conn.close();
+          entry.status = "disconnected";
+          updatePeersList();
+          scheduleReconnect(pid);
+      }
+  }, CONNECTION_WATCHDOG_MS);
+
+  setupConnHandlers(conn, pid, false);
 }
 
-/**
- * Schedules a reconnect attempt for a disconnected peer.
- * @param {string} pid - The peer ID to reconnect.
- */
 function scheduleReconnect(pid) {
   const entry = mesh[pid];
-  if (!entry || entry.reconnect) return; // Already scheduled or no entry
-  entry.backoff = Math.min((entry.backoff || 1000) * 2, 30000); // Exponential backoff, max 30s
-  entry.reconnect = setTimeout(() => {
-    entry.reconnect = null;
+  if (!entry || entry.reconnectTimer) return;
+  // Increase backoff exponentially
+  entry.backoff = Math.min((entry.backoff || RECONNECT_BASE_DELAY) * 1.5, 20000);
+
+  console.log(`Scheduling reconnect to ${pid} in ${entry.backoff}ms`);
+  entry.reconnectTimer = setTimeout(() => {
+    entry.reconnectTimer = null;
     tryConnectTo(pid, entry.backoff);
   }, entry.backoff);
 }
 
 // --------------- Data handling ---------------
-/**
- * Handles incoming data messages from peers.
- * @param {object} data - The received data object.
- * @param {string} fromPid - The peer ID that sent the data.
- * @param {PeerJS.DataConnection} conn - The data connection the data was received on.
- */
-async function onDataReceived(data, fromPid, conn) { // Made async for handleFileMessage
-  // Handle peer name assignment
+async function onDataReceived(data, fromPid, conn) {
   if (data && data.type === "assignName" && data.username && data.peerId) {
     if (data.peerId === myPeerId) {
       myUsername = data.username;
@@ -543,91 +582,82 @@ async function onDataReceived(data, fromPid, conn) { // Made async for handleFil
     updatePeersList();
     return;
   }
-  // Handle user list updates from host
   if (data && data.type === "userlist" && data.users) {
     peerUsernames = { ...data.users };
     hostStatusOverrides = data.statuses || null;
     updatePeersList();
     return;
   }
-  // Handle username broadcast from peers
   if (data && data.type === "username" && typeof data.username === "string") {
     const pid = data.peerId || fromPid;
-    const newName = data.username.substring(0, 20); // Truncate username
+    const newName = data.username.substring(0, 20);
     peerUsernames[pid] = newName;
     assignedNames[pid] = newName;
     updatePeersList();
-    if (isHost) broadcastUserListWithStatus(); // Host re-broadcasts updated list
+    if (isHost) broadcastUserListWithStatus();
     return;
   }
-  // Handle history synchronization (for new peers joining)
   if (data && data.type === "history" && Array.isArray(data.files)) {
     let addedFile = false;
-    for (const msg of data.files) { // Use for...of with await
-      if (msg && msg.fileMsgId && !msg.msgId) msg.msgId = `filemsg-${msg.fileMsgId}`; // Ensure msgId for file messages
+    for (const msg of data.files) {
+      if (msg && msg.fileMsgId && !msg.msgId) msg.msgId = `filemsg-${msg.fileMsgId}`;
       if (msg && msg.msgId && !knownMsgIds.has(msg.msgId)) {
         knownMsgIds.add(msg.msgId);
         if (msg.type === 'file') {
-          // Only add if not already in history
           if (!fileTransferHistory.find(m => m.type === 'file' && m.fileMsgId === msg.fileMsgId)) {
             fileTransferHistory.push(msg);
             addedFile = true;
-            // Also process the key if it's an encrypted file
             if (msg.encrypted && msg.encryptionKey) {
                 try {
                     const importedKey = await importKey(new Uint8Array(msg.encryptionKey));
                     encryptionKeys[msg.fileMsgId] = importedKey;
                 } catch (e) {
                     console.error("Failed to import encryption key from history:", e);
-                    // Decide how to handle this error: maybe mark file as un-downloadable
                 }
             }
           }
         }
       }
     }
-    if (addedFile) renderFileTransferHistory(); // Re-render if new file messages were added
+    if (addedFile) renderFileTransferHistory();
     return;
   }
-  // Handle goodbye messages (peer disconnecting gracefully)
   if (data && data.type === 'goodbye' && data.peerId) {
     const pid = data.peerId;
     if (mesh[pid]) mesh[pid].status = 'disconnected';
     if (hostStatusOverrides) hostStatusOverrides[pid] = 'disconnected';
+
+    // Explicitly handle Host closure
+    if (!isHost && pid === joinPeerId) {
+        isHostSessionClosed = true;
+        // Optional: cancel pending reconnects
+        if (mesh[pid] && mesh[pid].reconnectTimer) {
+             clearTimeout(mesh[pid].reconnectTimer);
+             mesh[pid].reconnectTimer = null;
+        }
+    }
+
     updatePeersList();
     if (isHost) broadcastUserListWithStatus();
-    triggerConnectionAnimation('disconnect'); // Trigger animation on graceful disconnect
+    triggerConnectionAnimation('disconnect');
     return;
   }
-  // Handle file deletion broadcast
   if (data && data.type === 'file-delete' && data.fileMsgId) {
     const fileMsgId = data.fileMsgId;
     const tile = fileMessagesArea.querySelector(`[data-file-msg-id="${fileMsgId}"]`);
-    if (tile) {
-      tile.remove();
-    }
+    if (tile) tile.remove();
     fileTransferHistory = fileTransferHistory.filter(msg => msg.fileMsgId !== fileMsgId);
     return;
   }
-  // Handle incoming file metadata messages
   if (data && data.type === 'file') {
-    await handleFileMessage(data); // Await this call
-    return;
-  }
-  // File transfer protocol messages (handled by patched setupConnHandlers directly)
-  if (data && data.type === 'file-request' || data.type === 'file-chunk' ||
-      data.type === 'file-end' || data.type === 'file-error' ||
-      data.type === 'file-cancel' || data.type === 'chunk-ack' || data.type === 'file-complete') {
+    await handleFileMessage(data);
     return;
   }
 }
 
-/**
- * Renders all file messages from `fileTransferHistory` to the UI.
- */
 function renderFileTransferHistory() {
   if (!fileMessagesArea) return;
-  fileMessagesArea.innerHTML = ""; // Clear existing messages
+  fileMessagesArea.innerHTML = "";
   fileTransferHistory.forEach(msg => {
     if (msg.type === 'file') {
       addFileMessage(msg);
@@ -635,34 +665,27 @@ function renderFileTransferHistory() {
   });
 }
 
-// --------------- Goodbye on unload ---------------
 window.addEventListener('unload', () => {
   broadcastData({ type: 'goodbye', peerId: myPeerId });
 });
 
-// --------------- Keep-alive ---------------
-/**
- * Periodically sends ping messages to connected peers and checks for timeouts.
- * Attempts to reconnect to unresponsive peers.
- */
 function startKeepAlive() {
   setInterval(() => {
     Object.entries(mesh).forEach(([pid, entry]) => {
       if (entry.status === "connected" && entry.conn && entry.conn.open) {
-        try { entry.conn.send({ type: "ping" }); } catch (_) {} // Send ping
+        try { entry.conn.send({ type: "ping" }); } catch (_) {}
       }
-      // If no ping received for a while, mark as disconnected and try reconnect
-      if (Date.now() - (entry.lastPing || 0) > 4000 && entry.status === "connected") {
+      if (Date.now() - (entry.lastPing || 0) > 5000 && entry.status === "connected") {
         if (hostStatusOverrides) hostStatusOverrides[pid] = 'disconnected';
         entry.status = "disconnected";
         updatePeersList();
         if (isHost) broadcastUserListWithStatus();
         scheduleReconnect(pid);
-        triggerConnectionAnimation('disconnect'); // Trigger animation on unexpected disconnect
+        triggerConnectionAnimation('disconnect');
       }
     });
-    if (isHost && myPeerId) updatePeersList(); // Host updates its own list
-  }, 1500); // Check every 1.5 seconds
+    if (isHost && myPeerId) updatePeersList();
+  }, 2000);
 }
 
 // --------------- Event Listeners ---------------
@@ -670,12 +693,12 @@ startBtn.addEventListener("click", () => {
   startBtn.disabled = true;
   hide(startBtn);
   show(sessionInfoSection);
-  sessionInfoSection.classList.remove("collapsed"); // Start expanded
+  sessionInfoSection.classList.remove("collapsed");
   isHost = true;
   peerUsernames = {};
   assignedNames = {};
   userCount = 0;
-  peer = new Peer(undefined, { debug: 2 }); // Initialize PeerJS as host
+  peer = new Peer(undefined, PEER_CONFIG); // Use robust config
 
   peer.on("open", id => {
     myPeerId = id;
@@ -686,8 +709,7 @@ startBtn.addEventListener("click", () => {
     joinLinkA.textContent = url;
     show(linkSection);
     show(qrContainer);
-    // Generate QR code for join link
-    qrcodeDiv.innerHTML = ''; // Clear previous QR code
+    qrcodeDiv.innerHTML = '';
     new QRCode(qrcodeDiv, {
       text: url,
       width: 180,
@@ -697,56 +719,62 @@ startBtn.addEventListener("click", () => {
       correctLevel: QRCode.CorrectLevel.M,
       margin: 2
     });
-    // Listen for incoming connections
     peer.on("connection", conn => {
       const pid = conn.peer;
-      mesh[pid] = { conn, status: "connecting", backoff: 1000, lastPing: Date.now() };
-      show(peersSection);
-      setupConnHandlers(conn, pid, true); // Set up handlers for incoming connection
+      // Identify if this is a file transfer channel or main channel
+      if (conn.metadata && conn.metadata.action === 'download') {
+          handleFileDownloadConnection(conn);
+      } else {
+          mesh[pid] = { conn, status: "connecting", backoff: RECONNECT_BASE_DELAY, lastPing: Date.now() };
+          show(peersSection);
+          setupConnHandlers(conn, pid, true);
+      }
     });
     peer.on("error", err => console.error("PeerJS error:", err));
   });
   startKeepAlive();
 });
 
-/**
- * Initiates joining a PeerJS mesh as a peer (not host).
- */
 function joinMesh() {
-  hide(startSection); // startSection doesn't exist, but this is safe
   show(sessionInfoSection);
-  sessionInfoSection.classList.remove("collapsed"); // Start expanded
-  peer = new Peer(undefined, { debug: 2 }); // Initialize PeerJS as peer
+  sessionInfoSection.classList.remove("collapsed");
+  peer = new Peer(undefined, PEER_CONFIG); // Use robust config
 
   peer.on("open", id => {
     myPeerId = id;
     show(usernameSection);
     show(peersSection);
     show(linkSection);
-    hide(qrContainer); // Hide QR code for peers
+    hide(qrContainer);
     const url = `${window.location.origin}${window.location.pathname}?join=${encodeURIComponent(joinPeerId)}`;
     joinLinkA.href = url;
     joinLinkA.textContent = url;
 
-    // Connect to the host
-    const conn = peer.connect(joinPeerId, { reliable: true });
-    mesh[joinPeerId] = { conn, status: "connecting", backoff: 1000, lastPing: Date.now() };
-    setupConnHandlers(conn, joinPeerId, false); // Set up handlers for outgoing connection to host
+    tryConnectTo(joinPeerId, RECONNECT_BASE_DELAY);
   });
-  // Listen for other incoming connections (e.g., from other peers in the mesh)
+
   peer.on("connection", conn => {
     const pid = conn.peer;
-    mesh[pid] = { conn, status: "connecting", backoff: 1000, lastPing: Date.now() };
-    setupConnHandlers(conn, pid, true); // Set up handlers for incoming connection
+     if (conn.metadata && conn.metadata.action === 'download') {
+         handleFileDownloadConnection(conn);
+     } else {
+         mesh[pid] = { conn, status: "connecting", backoff: RECONNECT_BASE_DELAY, lastPing: Date.now() };
+         setupConnHandlers(conn, pid, true);
+     }
   });
-  peer.on("error", err => console.error("PeerJS error:", err));
+  peer.on("error", err => {
+      console.error("PeerJS error:", err);
+      // If error is fatal/disconnect, try to reconnect to host
+      if (err.type === 'peer-unavailable' || err.type === 'disconnected') {
+           scheduleReconnect(joinPeerId);
+      }
+  });
   startKeepAlive();
 }
 
-// Automatically join mesh if 'join' parameter is present in URL
 if (joinPeerId) {
   joinMesh();
-  hide(fileTransferSection); // Peers joining shouldn't see the file selection until connected
+  hide(fileTransferSection);
 }
 
 usernameForm.addEventListener("submit", e => {
@@ -758,7 +786,6 @@ usernameForm.addEventListener("submit", e => {
   peerUsernames[myPeerId] = myUsername;
   assignedNames[myPeerId] = myUsername;
   updatePeersList();
-  // Broadcast username change to all peers
   broadcastData({ type: "username", username: myUsername, peerId: myPeerId });
   if (isHost) broadcastUserListWithStatus();
 });
@@ -773,7 +800,7 @@ async function generateAesGcmKey() {
 }
 
 async function encryptData(key, data) {
-  const iv = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12)); // 96-bit IV is standard for GCM
   const encrypted = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv: iv },
     key,
@@ -805,23 +832,18 @@ async function importKey(rawKey) {
   );
 }
 
-// --------------- File Transfer Logic ---------------
+// --------------- File Transfer Logic (The "Firehose") ---------------
 
-/**
- * Renders the list of files selected before the session starts.
- */
 function renderPreSessionFiles() {
     if (!fileMessagesArea) return;
-    fileMessagesArea.innerHTML = ''; // Clear the area first
-
+    fileMessagesArea.innerHTML = '';
     if (preSessionFiles.length === 0) {
         hide(startBtn);
         return;
     }
-
     preSessionFiles.forEach((file, index) => {
         const div = document.createElement('div');
-        div.className = 'message-tile file'; // Use same base class
+        div.className = 'message-tile file';
         div.innerHTML = `
             <div class="file-tile-content">
                 <div class="file-meta-row">
@@ -838,25 +860,17 @@ function renderPreSessionFiles() {
         `;
         fileMessagesArea.appendChild(div);
     });
-
-    // Add event listeners for the remove buttons
     fileMessagesArea.querySelectorAll('.remove-file-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
             const indexToRemove = parseInt(e.currentTarget.dataset.index, 10);
-            preSessionFiles.splice(indexToRemove, 1); // Remove from array
-            renderPreSessionFiles(); // Re-render the list
+            preSessionFiles.splice(indexToRemove, 1);
+            renderPreSessionFiles();
         });
     });
-
     show(startBtn);
 }
 
-
-/**
- * Processes a single file for sending: creates metadata, updates UI, and broadcasts.
- * @param {File} file The file object to send.
- */
 async function sendFile(file) {
   if (!file) return;
 
@@ -873,47 +887,37 @@ async function sendFile(file) {
     senderId: myPeerId,
     username: myUsername,
     encrypted: true,
-    encryptionKey: Array.from(new Uint8Array(exportedKey)),
-    ivSize: 16
+    encryptionKey: Array.from(new Uint8Array(exportedKey))
   };
 
-  addFileMessage(msg); // Add the proper transfer tile
+  addFileMessage(msg);
   if (!fileTransfers[fileMsgId]) fileTransfers[fileMsgId] = {};
-  fileTransfers[fileMsgId][myPeerId] = { file, status: 'ready', progress: 0, controller: null };
+  // Store file for sending logic later
+  fileTransfers[fileMsgId][myPeerId] = { file, status: 'ready', progress: 0 };
 
-  // Add to history only if it's not a duplicate
   if (!fileTransferHistory.find(m => m.fileMsgId === fileMsgId)) {
     fileTransferHistory.push(msg);
   }
   broadcastData(msg);
 }
 
-// Event listener for the file selection button (triggers hidden file input)
 fileBtn.addEventListener('click', () => fileInput.click());
 
-// Event listener for when files are selected in the input
 fileInput.addEventListener('change', async e => {
   const files = e.target.files;
   if (!files || files.length === 0) return;
 
-  if (!peer) { // --- Case 1: Session NOT started yet ---
-    for (const file of files) {
-      preSessionFiles.push(file);
-    }
+  if (!peer) {
+    for (const file of files) preSessionFiles.push(file);
     renderPreSessionFiles();
-  } else { // --- Case 2: Session is ALREADY active ---
+  } else {
     const sendPromises = Array.from(files).map(file => sendFile(file));
     await Promise.all(sendPromises);
   }
-  fileInput.value = ''; // Clear the input for next selection
+  fileInput.value = '';
 });
 
-/**
- * Handles an incoming file metadata message.
- * This function is called when a peer sends information about a file they want to share.
- * @param {object} msg - The file metadata message.
- */
-async function handleFileMessage(msg) { // Made async here
+async function handleFileMessage(msg) {
   if (!fileTransferHistory.find(m => m.type === 'file' && m.fileMsgId === msg.fileMsgId)) {
     fileTransferHistory.push(msg);
   }
@@ -930,19 +934,17 @@ async function handleFileMessage(msg) { // Made async here
 
   if (!fileTransfers[msg.fileMsgId]) fileTransfers[msg.fileMsgId] = {};
   if (!fileTransfers[msg.fileMsgId][myPeerId]) {
-    fileTransfers[msg.fileMsgId][myPeerId] = { status: 'ready', progress: 0, controller: null };
+    fileTransfers[msg.fileMsgId][myPeerId] = { status: 'ready', progress: 0 };
   }
-  addFileMessage(msg); // Add the file message tile to the UI
+  addFileMessage(msg);
   if (!window.streamSaver) {
     const tile = fileMessagesArea.querySelector(`[data-file-msg-id="${msg.fileMsgId}"]`);
     if (tile) {
-      updateFileTileUI(tile, { status: 'canceled', progress: 0, error: 'streamSaver.js not loaded. Please reload or contact the host.' });
-      displayMessageBox('Error', 'File download requires streamSaver.js. Please reload the page or contact the host.');
+      updateFileTileUI(tile, { status: 'canceled', progress: 0, error: 'streamSaver.js not loaded. Please reload.' });
     }
   }
 }
 
-// Event delegation for download/cancel buttons on file message tiles
 fileMessagesArea.addEventListener('click', async function(e) {
   const downloadBtn = e.target.closest('.file-download-link');
   const cancelBtn = e.target.closest('.file-cancel-link');
@@ -955,8 +957,7 @@ fileMessagesArea.addEventListener('click', async function(e) {
 
   if (downloadBtn) {
     if (!window.streamSaver) {
-      updateFileTileUI(tile, { status: 'canceled', progress: 0, error: 'streamSaver.js not loaded' });
-      displayMessageBox('Error', 'File download requires streamSaver.js. Please reload the page or contact the host.');
+      displayMessageBox('Error', 'File download requires streamSaver.js. Please reload the page.');
       return;
     }
     startFileDownload(tile, fileMsgId);
@@ -966,330 +967,223 @@ fileMessagesArea.addEventListener('click', async function(e) {
       displayMessageBox('Confirm Delete', 'This will remove the file for all participants. Are you sure?', true)
         .then(confirmed => {
             if (confirmed) {
-                // Remove from local UI
                 tile.remove();
-                // Remove from history
                 fileTransferHistory = fileTransferHistory.filter(msg => msg.fileMsgId !== fileMsgId);
-                // Broadcast deletion
                 broadcastData({ type: 'file-delete', fileMsgId });
             }
         });
   }
 });
 
-// Store original setupConnHandlers to patch it for file transfer
-originalSetupConnHandlers = setupConnHandlers;
+// --------------- High-Speed Send Logic ---------------
+function handleFileDownloadConnection(conn) {
+    let activeSender = { canceled: false };
 
-/**
- * Patched setupConnHandlers to include file transfer data handling.
- * This function intercepts file-related messages on a data connection.
- */
-setupConnHandlers = function(conn, pid, isIncoming) {
-  originalSetupConnHandlers(conn, pid, isIncoming); // Call the original function first
+    conn.on('data', async data => {
+        if (data && data.type === 'file-request' && data.fileMsgId) {
+            const fileMsgId = data.fileMsgId;
+            const fileTransferState = fileTransfers[fileMsgId]?.[myPeerId];
 
-  let activeFileSenders = {}; // Track active file send operations for this specific connection
-
-  conn.on('data', async data => {
-    if (data && data.type === 'file-request' && data.fileMsgId) {
-      const fileMsgId = data.fileMsgId;
-      const fileTransferState = fileTransfers[fileMsgId]?.[myPeerId];
-      const fileMsg = findFileMsgInHistory(fileMsgId);
-
-      if (!fileTransferState || !fileTransferState.file) {
-        conn.send({ type: 'file-error', error: 'File not found', fileMsgId });
-        conn.close();
-        return;
-      }
-
-      const file = fileTransferState.file;
-      const isEncrypted = fileMsg && fileMsg.encrypted;
-      const encryptionKey = isEncrypted ? encryptionKeys[fileMsgId] : null;
-
-      if (isEncrypted && !encryptionKey) {
-          console.error(`Encryption key not found for encrypted file ${fileMsgId}`);
-          conn.send({ type: 'file-error', error: 'Encryption key missing on sender side', fileMsgId });
-          conn.close();
-          return;
-      }
-
-      const chunkSize = 1024 * 1024;
-      const windowSize = 4;
-      let offset = 0;
-      let canceled = false;
-      let awaitingAcks = 0;
-      let chunkAckMap = {};
-      let retriesMap = {};
-      let maxRetries = 5;
-      let ackTimeouts = {};
-
-      activeFileSenders[fileMsgId] = () => { canceled = true; };
-
-      let fileTransferControlListener = d => {
-        if (d && d.type === 'file-cancel' && d.fileMsgId === fileMsgId) {
-          canceled = true;
-          conn.close();
-        }
-        if (d && d.type === 'chunk-ack' && d.fileMsgId === fileMsgId && typeof d.chunkId === 'number') {
-          if (!chunkAckMap[d.chunkId]) {
-            chunkAckMap[d.chunkId] = true;
-            awaitingAcks--;
-            if (ackTimeouts[d.chunkId]) {
-              clearTimeout(ackTimeouts[d.chunkId]);
-              delete ackTimeouts[d.chunkId];
-            }
-          }
-        }
-        if (d && d.type === 'file-complete' && d.fileMsgId === fileMsgId) {
-          conn.close();
-        }
-      };
-      conn.on('data', fileTransferControlListener);
-
-      let chunkId = 0;
-      while (offset < file.size && !canceled) {
-        while (awaitingAcks >= windowSize && !canceled) {
-          await new Promise(resolve => setTimeout(resolve, 10));
-        }
-        if (canceled) break;
-
-        const slice = file.slice(offset, offset + chunkSize);
-        const chunkBuffer = await slice.arrayBuffer();
-
-        let dataToSend = chunkBuffer;
-        let iv = null;
-
-        if (isEncrypted && encryptionKey) {
-            try {
-                const encryptedResult = await encryptData(encryptionKey, chunkBuffer);
-                dataToSend = encryptedResult.encryptedData;
-                iv = encryptedResult.iv;
-            } catch (e) {
-                console.error("Encryption failed for chunk:", e);
-                conn.send({ type: 'file-error', error: 'Encryption failed: ' + e.message, fileMsgId });
+            if (!fileTransferState || !fileTransferState.file) {
+                conn.send({ type: 'file-error', error: 'File not found locally', fileMsgId });
                 conn.close();
-                canceled = true;
-                break;
+                return;
             }
+
+            const file = fileTransferState.file;
+            const encryptionKey = encryptionKeys[fileMsgId];
+            if (!encryptionKey) {
+                conn.send({ type: 'file-error', error: 'Missing encryption key', fileMsgId });
+                conn.close();
+                return;
+            }
+
+            // --- The Firehose Loop ---
+            conn.send({ type: 'file-start', fileSize: file.size });
+
+            let offset = 0;
+            let chunkId = 0;
+            let lastAckedChunkId = -1;
+            let lastCheckedBufferedAmount = 0;
+
+            // Handle ACKs (Cumulative)
+            // Listen for control messages on this specific connection
+            const ackListener = (msg) => {
+                 if (msg.type === 'chunk-ack') {
+                     lastAckedChunkId = Math.max(lastAckedChunkId, msg.chunkId);
+                 } else if (msg.type === 'file-cancel') {
+                     activeSender.canceled = true;
+                 }
+            };
+
+            // We need a way to hook into the data listener we are currently in.
+            // Since PeerJS 'data' event is persistent, we can't easily add a second listener just for this scope.
+            // Instead, we will assume the client is sending ACKs and we check them.
+            // IMPORTANT: In this simplified "firehose" logic, we rely on the main listener for ACKs.
+            // BUT, this is a dedicated connection. So we can re-assign on('data')?
+            // PeerJS supports multiple listeners. Let's add one.
+            conn.on('data', ackListener);
+
+            try {
+                while (offset < file.size && !activeSender.canceled) {
+                    // 1. Backpressure Check
+                    if (conn.dataChannel.bufferedAmount > 8 * 1024 * 1024) { // 8MB buffer limit
+                        await new Promise(r => setTimeout(r, 50));
+                        continue;
+                    }
+
+                    // 2. Window Check
+                    if (chunkId - lastAckedChunkId > MAX_WINDOW_SIZE) {
+                         // Too many un-acked chunks. Wait briefly.
+                         await new Promise(r => setTimeout(r, 10));
+                         continue;
+                    }
+
+                    // 3. Read & Encrypt
+                    const slice = file.slice(offset, offset + CHUNK_SIZE);
+                    const chunkBuffer = await slice.arrayBuffer();
+
+                    // Encrypt
+                    const { encryptedData, iv } = await encryptData(encryptionKey, chunkBuffer);
+
+                    // 4. Send
+                    conn.send({
+                        type: 'file-chunk',
+                        chunkId: chunkId,
+                        data: encryptedData,
+                        iv: Array.from(iv)
+                    });
+
+                    offset += CHUNK_SIZE;
+                    chunkId++;
+                }
+
+                if (!activeSender.canceled) {
+                    conn.send({ type: 'file-end' });
+                }
+
+            } catch (err) {
+                console.error("Send error:", err);
+                conn.send({ type: 'file-error', error: err.message });
+            } finally {
+                // Cleanup
+                setTimeout(() => {
+                    if (conn.open) conn.close();
+                }, 5000); // Give time for 'file-end' to arrive
+            }
+        } else if (data && data.type === 'file-cancel') {
+            activeSender.canceled = true;
+            conn.close();
         }
+    });
+}
 
-        conn.send({ type: 'file-chunk', data: dataToSend, chunkId, fileMsgId, iv: iv ? Array.from(iv) : null });
-        awaitingAcks++;
-        retriesMap[chunkId] = 0;
-
-        ackTimeouts[chunkId] = setTimeout(function retryChunk() {
-          if (!chunkAckMap[chunkId] && !canceled) {
-            retriesMap[chunkId]++;
-            if (retriesMap[chunkId] > maxRetries) {
-              conn.send({ type: 'file-error', error: 'Receiver not responding', fileMsgId });
-              conn.close();
-              canceled = true;
-            } else {
-              conn.send({ type: 'file-chunk', data: dataToSend, chunkId, fileMsgId, iv: iv ? Array.from(iv) : null });
-              ackTimeouts[chunkId] = setTimeout(retryChunk, 7000);
-            }
-          }
-        }, 7000);
-
-        offset += chunkSize;
-        chunkId++;
-      }
-
-      while (awaitingAcks > 0 && !canceled) {
-        await new Promise(resolve => setTimeout(resolve, 10));
-      }
-
-      if (!canceled) {
-        conn.send({ type: 'file-end', fileMsgId });
-      }
-
-      setTimeout(() => { conn.close(); }, 10000);
-
-    } else if (data && data.type === 'file-cancel' && data.fileMsgId) {
-      if (activeFileSenders[data.fileMsgId]) {
-        activeFileSenders[data.fileMsgId]();
-        delete activeFileSenders[data.fileMsgId];
-      }
-      conn.close();
-    }
-  });
-};
-
-/**
- * Initiates the download process for a file.
- * @param {HTMLElement} tile - The file message tile DOM element.
- * @param {string} fileMsgId - The unique ID of the file message.
- */
+// --------------- High-Speed Download Logic ---------------
 async function startFileDownload(tile, fileMsgId) {
-  if (!fileTransfers[fileMsgId]) fileTransfers[fileMsgId] = {};
-
-  if (fileTransfers[fileMsgId][myPeerId] && fileTransfers[fileMsgId][myPeerId].controller) {
-    fileTransfers[fileMsgId][myPeerId].controller.abort();
+  const fileMsg = fileTransferHistory.find(m => m.type === 'file' && m.fileMsgId === fileMsgId);
+  if (!fileMsg) {
+    updateFileTileUI(tile, { status: 'canceled', error: 'Metadata missing' });
+    return;
   }
 
-  fileTransfers[fileMsgId][myPeerId] = {
-    status: 'downloading',
-    progress: 0,
-    controller: new AbortController(),
-    conn: null,
-    cancel: null
+  // --- DUAL CHANNEL: Open separate connection for download ---
+  const conn = peer.connect(fileMsg.senderId, {
+      reliable: true,
+      metadata: { action: 'download', fileMsgId: fileMsgId }
+  });
+
+  const transferState = {
+      conn: conn,
+      controller: new AbortController(),
+      status: 'downloading'
   };
+
+  fileTransfers[fileMsgId] = fileTransfers[fileMsgId] || {};
+  fileTransfers[fileMsgId][myPeerId] = transferState;
 
   updateFileTileUI(tile, { status: 'downloading', progress: 0 });
 
-  const fileMsg = findFileMsgInHistory(fileMsgId);
-  if (!fileMsg) {
-    updateFileTileUI(tile, { status: 'canceled', progress: 0, error: 'File metadata not found in history.' });
-    return;
-  }
-
-  const senderId = fileMsg.senderId;
-  const conn = peer.connect(senderId, { reliable: true, metadata: { fileMsgId, action: 'download' } });
-  fileTransfers[fileMsgId][myPeerId].conn = conn;
-
-  conn.on('open', () => {
-    conn.send({ type: 'file-request', fileMsgId });
+  conn.on('open', async () => {
+      conn.send({ type: 'file-request', fileMsgId });
   });
 
-  let fileWriter, received = 0, total = fileMsg.fileSize;
-  let streamSaver = window.streamSaver;
+  // StreamSaver setup
+  const fileStream = streamSaver.createWriteStream(fileMsg.fileName, { size: fileMsg.fileSize });
+  const writer = fileStream.getWriter();
 
-  if (!streamSaver) {
-    updateFileTileUI(tile, { status: 'canceled', progress: 0, error: 'streamSaver.js not loaded' });
-    displayMessageBox('Error', 'File download requires streamSaver.js. Please reload the page or contact the host.');
-    conn.close();
-    return;
-  }
+  let receivedBytes = 0;
+  let expectedBytes = fileMsg.fileSize;
+  let lastChunkId = -1;
 
-  let writableStream = streamSaver.createWriteStream(fileMsg.fileName, { size: total });
-  fileWriter = writableStream.getWriter();
+  conn.on('data', async data => {
+      if (transferState.status !== 'downloading') return;
 
-  let downloadAborted = false;
-  let chunkAckTimeout = null;
+      if (data.type === 'file-chunk') {
+          try {
+              // Decrypt
+              const iv = new Uint8Array(data.iv);
+              const encrypted = new Uint8Array(data.data);
+              const decrypted = await decryptData(encryptionKeys[fileMsgId], encrypted, iv);
 
-  function sendAck(chunkId) {
-    if (conn.open) conn.send({ type: 'chunk-ack', fileMsgId, chunkId });
-  }
+              await writer.write(decrypted);
+              receivedBytes += decrypted.byteLength;
+              lastChunkId = data.chunkId;
 
-  function sendFileComplete() {
-    if (conn.open) conn.send({ type: 'file-complete', fileMsgId });
-  }
+              // Update UI
+              updateFileTileUI(tile, { status: 'downloading', progress: receivedBytes / expectedBytes });
 
-  function abortDownload(errorMsg, reason) {
-    if (downloadAborted) return;
-    downloadAborted = true;
+              // Cumulative ACK
+              if (data.chunkId % ACK_INTERVAL === 0) {
+                  conn.send({ type: 'chunk-ack', chunkId: data.chunkId });
+              }
 
-    const transfer = fileTransfers[fileMsgId]?.[myPeerId];
-    if (transfer) {
-      transfer.controller.abort();
-    }
-
-    // Only send cancel message to peer if it was a local user cancellation
-    if (reason === 'user' && conn && conn.open) {
-        conn.send({ type: 'file-cancel', fileMsgId });
-    }
-
-    if (fileWriter) fileWriter.abort().catch(()=>{}); // Aborting might throw an error if stream is already closed, ignore it.
-    updateFileTileUI(tile, { status: 'canceled', progress: received / total, error: errorMsg, reason });
-    if (conn && conn.open) conn.close();
-  }
-
-  fileWriter.closed.catch(err => {
-      if (!downloadAborted) {
-          console.log("Download stream aborted, likely by user cancelling save dialog.", err);
-          abortDownload("Canceled", "user");
+          } catch (e) {
+              console.error("Write/Decrypt error:", e);
+              abortDownload("Write Error", 'error');
+          }
+      } else if (data.type === 'file-end') {
+          // Send final ACK
+          conn.send({ type: 'chunk-ack', chunkId: lastChunkId });
+          await writer.close();
+          transferState.status = 'completed';
+          updateFileTileUI(tile, { status: 'completed', progress: 1 });
+          setTimeout(() => conn.close(), 1000);
+      } else if (data.type === 'file-error') {
+          abortDownload(data.error, 'sender');
       }
-  });
-
-  conn.on('data', async chunk => {
-    const transfer = fileTransfers[fileMsgId]?.[myPeerId];
-    if (!transfer || transfer.controller.signal.aborted || downloadAborted) {
-      if(!downloadAborted) abortDownload('Aborted', 'user');
-      return;
-    }
-
-    if (chunk.type === 'file-chunk' && chunk.data) {
-      try {
-        let dataToWrite = new Uint8Array(chunk.data);
-
-        if (fileMsg.encrypted && encryptionKeys[fileMsgId] && chunk.iv) {
-            try {
-                const importedKey = encryptionKeys[fileMsgId];
-                const iv = new Uint8Array(chunk.iv);
-                dataToWrite = await decryptData(importedKey, dataToWrite, iv);
-            } catch (e) {
-                console.error("Decryption failed for chunk:", e);
-                abortDownload('Decryption failed: ' + e.message, 'error');
-                return;
-            }
-        }
-
-        await fileWriter.write(dataToWrite);
-        received += dataToWrite.byteLength;
-        transfer.progress = received / total;
-        updateFileTileUI(tile, { status: 'downloading', progress: transfer.progress });
-        sendAck(chunk.chunkId);
-
-        if (chunkAckTimeout) clearTimeout(chunkAckTimeout);
-        chunkAckTimeout = setTimeout(() => {
-          abortDownload('Timeout waiting for next chunk', 'connection');
-        }, 20000);
-
-      } catch (e) {
-        abortDownload('Write error: ' + e.message, 'error');
-      }
-    } else if (chunk.type === 'file-end') {
-      try {
-        if(chunkAckTimeout) clearTimeout(chunkAckTimeout);
-        await fileWriter.close();
-        updateFileTileUI(tile, { status: 'completed', progress: 1 });
-        if (transfer) transfer.status = 'completed';
-        sendFileComplete();
-        setTimeout(() => conn.close(), 1000);
-      } catch (e) {
-        abortDownload('File close error: ' + e.message, 'error');
-      }
-    } else if (chunk.type === 'file-error') {
-      abortDownload(chunk.error || 'Sender error', 'sender');
-    }
   });
 
   conn.on('close', () => {
-    const transfer = fileTransfers[fileMsgId]?.[myPeerId];
-    if (transfer && !downloadAborted && transfer.status === 'downloading') {
-      updateFileTileUI(tile, { status: 'canceled', progress: received / total, reason: 'connection' });
-    }
+      if (transferState.status === 'downloading') {
+          abortDownload('Connection closed unexpectedly', 'connection');
+      }
   });
 
-  if (fileTransfers[fileMsgId][myPeerId]) {
-    fileTransfers[fileMsgId][myPeerId].cancel = () => {
-        abortDownload('Canceled by you', 'user');
-    };
+  function abortDownload(msg, reason) {
+      if (transferState.status !== 'downloading') return;
+      transferState.status = 'canceled';
+      transferState.controller.abort();
+      writer.abort().catch(()=>{});
+      conn.close();
+      updateFileTileUI(tile, { status: 'canceled', error: msg, reason: reason });
   }
+
+  // Hook up cancel button logic
+  transferState.cancel = () => {
+      if (conn.open) conn.send({ type: 'file-cancel' });
+      abortDownload('Canceled by you', 'user');
+  };
 }
 
-/**
- * Cancels an ongoing file download.
- * @param {HTMLElement} tile - The file message tile DOM element.
- * @param {string} fileMsgId - The unique ID of the file message.
- */
 function cancelFileDownload(tile, fileMsgId) {
-  if (fileTransfers[fileMsgId] && fileTransfers[fileMsgId][myPeerId] && fileTransfers[fileMsgId][myPeerId].cancel) {
-    fileTransfers[fileMsgId][myPeerId].cancel();
+  const transfer = fileTransfers[fileMsgId]?.[myPeerId];
+  if (transfer && transfer.cancel) {
+    transfer.cancel();
   }
 }
 
-/**
- * Finds a file message in the `fileTransferHistory` by its ID.
- * @param {string} fileMsgId - The unique ID of the file message.
- * @returns {object|undefined} The file message object if found, otherwise undefined.
- */
-function findFileMsgInHistory(fileMsgId) {
-  return fileTransferHistory.find(m => m.type === 'file' && m.fileMsgId === fileMsgId);
-}
-
-// Custom message box function (replaces alert)
+// Custom message box
 function displayMessageBox(title, message, isConfirm = false) {
-    // Return a promise that resolves with true (for OK/Confirm) or false (for Cancel)
     return new Promise(resolve => {
         const existingBox = document.getElementById('customMessageBox');
         if (existingBox) existingBox.remove();
@@ -1297,20 +1191,10 @@ function displayMessageBox(title, message, isConfirm = false) {
         const messageBox = document.createElement('div');
         messageBox.id = 'customMessageBox';
         messageBox.style.cssText = `
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 16px;
-            padding: 20px;
-            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
-            z-index: 10000;
-            max-width: 90%;
-            width: 320px;
-            text-align: center;
-            color: var(--text);
+            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            background: var(--card); border: 1px solid var(--border); border-radius: 16px;
+            padding: 20px; box-shadow: 0 4px 8px rgba(0,0,0,0.2); z-index: 10000;
+            max-width: 90%; width: 320px; text-align: center; color: var(--text);
         `;
 
         const buttonsHtml = isConfirm
@@ -1326,78 +1210,34 @@ function displayMessageBox(title, message, isConfirm = false) {
 
         document.body.appendChild(messageBox);
 
-        const confirmBtn = document.getElementById('messageBoxConfirmBtn');
-        const cancelBtn = document.getElementById('messageBoxCancelBtn');
-        const closeBtn = document.getElementById('messageBoxCloseBtn');
-
         if (isConfirm) {
-            confirmBtn.addEventListener('click', () => {
-                messageBox.remove();
-                resolve(true);
-            });
-            cancelBtn.addEventListener('click', () => {
-                messageBox.remove();
-                resolve(false);
-            });
+            document.getElementById('messageBoxConfirmBtn').addEventListener('click', () => { messageBox.remove(); resolve(true); });
+            document.getElementById('messageBoxCancelBtn').addEventListener('click', () => { messageBox.remove(); resolve(false); });
         } else {
-            closeBtn.addEventListener('click', () => {
-                messageBox.remove();
-                resolve(true);
-            });
+            document.getElementById('messageBoxCloseBtn').addEventListener('click', () => { messageBox.remove(); resolve(true); });
         }
     });
 }
 
-
-// Copy join link functionality
+// Copy join link
 if (copyLinkBtn && joinLinkA) {
   copyLinkBtn.addEventListener('click', () => {
     const link = joinLinkA.href;
     if (link && link !== '#') {
         navigator.clipboard.writeText(link).then(() => {
-          copyLinkBtn.title = 'Copied!';
-          const icon = copyLinkBtn.querySelector('.material-icons');
-          if (icon) {
-            icon.textContent = 'check';
-            icon.style.color = '#267c26';
-            setTimeout(() => {
-              icon.textContent = 'content_copy';
-              icon.style.color = '';
-              copyLinkBtn.title = 'Copy link';
-            }, 1200);
-          }
-        }).catch(err => {
-          console.error('Failed to copy to clipboard, using fallback:', err);
-          const tempInput = document.createElement('input');
-          tempInput.value = link;
-          document.body.appendChild(tempInput);
-          tempInput.select();
-          document.execCommand('copy');
-          document.body.removeChild(tempInput);
-          const icon = copyLinkBtn.querySelector('.material-icons');
-          if (icon) {
-            icon.textContent = 'check';
-            setTimeout(() => { icon.textContent = 'content_copy'; }, 1200);
-          }
-        });
+          const originalIcon = copyLinkBtn.innerHTML;
+          copyLinkBtn.innerHTML = '<span class="material-icons" style="color:#4CAF50">check</span>';
+          setTimeout(() => { copyLinkBtn.innerHTML = originalIcon; }, 1500);
+        }).catch(() => {});
     }
   });
 }
 
-// Initial render of file transfer history on load
 document.addEventListener('DOMContentLoaded', () => {
   renderFileTransferHistory();
-
-  // Register the service worker for PWA offline capabilities
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('/service-worker.js')
-        .then(registration => {
-          console.log('Service Worker registered with scope:', registration.scope);
-        })
-        .catch(err => {
-          console.error('Service Worker registration failed:', err);
-        });
+      navigator.serviceWorker.register('/service-worker.js').catch(err => console.error('SW failed:', err));
     });
   }
 });
