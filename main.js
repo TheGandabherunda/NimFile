@@ -6,24 +6,27 @@
 
 // --------------- Configuration & Constants ---------------
 const PEER_CONFIG = {
-  debug: 2, // 2 = Warnings & Errors (Helps debug connection issues)
-  secure: true, // CRITICAL for https:// hosting
+  debug: 2, // 2 = Warnings & Errors
+  secure: true, // CRITICAL for https://
+  pingInterval: 5000, // Keep-alive for signaling server
   config: {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
       { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun3.l.google.com:19302' },
+      { urls: 'stun:stun4.l.google.com:19302' },
       { urls: 'stun:global.stun.twilio.com:3478' }
     ],
-    sdpSemantics: 'unified-plan' // Modern WebRTC standard
+    sdpSemantics: 'unified-plan'
   }
 };
 
 const CONNECTION_WATCHDOG_MS = 15000; // 15 seconds to connect or die
 const RECONNECT_BASE_DELAY = 1000;
-const CHUNK_SIZE = 16 * 1024; // 16KB - Sweet spot for WebRTC
-const MAX_WINDOW_SIZE = 1024; // Allow ~16MB in flight
-const ACK_INTERVAL = 16; // Send ACK every 16 chunks to reduce CPU load
+const CHUNK_SIZE = 16 * 1024; // 16KB
+const MAX_WINDOW_SIZE = 1024;
+const ACK_INTERVAL = 16;
 
 // --------------- PeerJS + UI helpers ---------------
 function getPeerIdFromURL() {
@@ -102,27 +105,22 @@ function assignHostName() {
 }
 
 // --------------- UI Feedback (Animation) ---------------
-/**
- * Triggers a subtle, full-screen pulse animation for connection status changes.
- * @param {'connect' | 'disconnect'} type - The type of event.
- */
 function triggerConnectionAnimation(type) {
   if (!connectionStatusOverlay) return;
   const className = type === 'connect' ? 'animate-connect' : 'animate-disconnect';
-
-  // Remove any existing animation classes to reset
   connectionStatusOverlay.classList.remove('animate-connect', 'animate-disconnect');
-
-  // We use a timeout to allow the browser to remove the class before adding it again,
-  // which is necessary to re-trigger the animation.
   setTimeout(() => {
     connectionStatusOverlay.classList.add(className);
   }, 10);
-
-  // Remove the class after the animation is done
   setTimeout(() => {
     connectionStatusOverlay.classList.remove(className);
-  }, 2200); // Must match the animation duration in CSS
+  }, 2200);
+}
+
+function collapseSessionInfo() {
+    if (sessionInfoSection && !sessionInfoSection.classList.contains("collapsed")) {
+        sessionInfoSection.classList.add("collapsed");
+    }
 }
 
 // --------------- File Message UI ---------------
@@ -246,7 +244,6 @@ function updatePeersList() {
   if (!list) return;
 
   // --- SPECIAL HANDLING FOR PEERS (Non-Host) ---
-  // If we are a peer and we are disconnected or the host closed session
   if (!isHost && joinPeerId) {
     const hostStatus = getPeerStatus(joinPeerId);
 
@@ -260,7 +257,7 @@ function updatePeersList() {
         connectedPeerName.textContent = "Session Ended";
         show(peersSection);
         if (sessionInfoSection) sessionInfoSection.classList.remove("collapsed");
-        return; // Stop processing normal list
+        return;
     }
 
     // CASE 2: Disconnected (Network error / Timeout)
@@ -275,16 +272,12 @@ function updatePeersList() {
                 </button>
             </li>
         `;
-
-        // Bind the reconnect button
-        // We use setTimeout to ensure the element is in DOM
         setTimeout(() => {
             const btn = document.getElementById('manualReconnectBtn');
             if (btn) {
                 btn.onclick = () => {
                     btn.textContent = 'Reconnecting...';
                     btn.disabled = true;
-                    // Reset backoff and try immediately
                     if (mesh[joinPeerId]) mesh[joinPeerId].backoff = 0;
                     tryConnectTo(joinPeerId, 0);
                 };
@@ -294,11 +287,11 @@ function updatePeersList() {
         connectedPeerName.textContent = "Offline";
         show(peersSection);
         if (sessionInfoSection) sessionInfoSection.classList.remove("collapsed");
-        return; // Stop processing normal list
+        return;
     }
   }
 
-  // --- STANDARD LIST RENDERING (Host or Connected Peer) ---
+  // --- STANDARD LIST RENDERING ---
   const entries = Object.entries(peerUsernames);
   const hostPid = isHost ? myPeerId : joinPeerId;
   const hostEntry = entries.find(([pid, _]) => pid === hostPid);
@@ -318,7 +311,6 @@ function updatePeersList() {
     const [pid, uname] = hostEntry;
     let status = getPeerStatus(pid);
     if (!isHost && !hostStatusOverrides && pid === joinPeerId) status = "connecting";
-    // Check if actually connected to host locally
     if(!isHost && pid === joinPeerId && mesh[pid] && mesh[pid].status === 'connected') status = 'connected';
 
     let statusText =
@@ -348,33 +340,24 @@ function updatePeersList() {
     list.appendChild(li);
   });
 
-  let hasActiveConnection = false;
-
   if (isHost) {
     const connectedPeersCount = Object.keys(mesh).filter(pid => mesh[pid].status === "connected" && pid !== myPeerId).length;
     if (connectedPeersCount > 0) {
       connectedPeerName.textContent = `${connectedPeersCount} active`;
       show(peersSection);
-      hasActiveConnection = true;
     } else {
       connectedPeerName.textContent = "Waiting for connections...";
       hide(peersSection);
-      hasActiveConnection = false;
     }
   } else {
     if (getPeerStatus(joinPeerId) === "connected") {
       connectedPeerName.textContent = peerUsernames[joinPeerId] || "Host";
       show(peersSection);
-      hasActiveConnection = true;
     } else {
       connectedPeerName.textContent = "Offline";
       hide(peersSection);
-      hasActiveConnection = false;
     }
   }
-
-  // NOTE: Auto-expand when no connection logic is handled here
-  // But we want to auto-CLOSE when connected. That logic is inside setupConnHandlers -> conn.on('open')
 }
 
 function getAllStatuses() {
@@ -434,43 +417,44 @@ function sendHistoryToPeer(conn) {
 // --------------- Connection handlers ---------------
 async function setupConnHandlers(conn, pid, isIncoming) {
   const entry = mesh[pid];
-  if (!entry) return; // Should exist from tryConnectTo or incoming handler
+  if (!entry) return;
 
   entry.conn = conn;
   if (conn._setupDone) return;
   conn._setupDone = true;
 
-  // Clear watchdog if it exists
   if (entry.watchdogTimer) {
       clearTimeout(entry.watchdogTimer);
       entry.watchdogTimer = null;
   }
 
-  // --- Logic to handle connection establishment ---
+  // Monitor Low-Level ICE state for failures
+  if (conn.peerConnection) {
+      conn.peerConnection.oniceconnectionstatechange = () => {
+          if (conn.peerConnection.iceConnectionState === 'failed' || conn.peerConnection.iceConnectionState === 'disconnected') {
+              console.warn(`ICE connection state to ${pid}: ${conn.peerConnection.iceConnectionState}`);
+              // We don't force close here immediately to allow slight temporary drops,
+              // but if it stays 'failed', PeerJS usually emits 'close'.
+          }
+      };
+  }
+
   const onOpen = async () => {
     entry.status = "connected";
-    entry.backoff = RECONNECT_BASE_DELAY; // Reset backoff
+    entry.backoff = RECONNECT_BASE_DELAY;
     if (entry.reconnectTimer) { clearTimeout(entry.reconnectTimer); entry.reconnectTimer = null; }
     entry.lastPing = Date.now();
-    isHostSessionClosed = false; // Reset close flag on new connection
+    isHostSessionClosed = false;
 
     if (!peerUsernames[pid]) peerUsernames[pid] = assignDefaultUsernameToPeer(pid);
     else assignDefaultUsernameToPeer(pid);
 
-    // Update List & UI
     updatePeersList();
     show(fileTransferSection);
-
-    // Trigger animation
     triggerConnectionAnimation('connect');
 
-    // FORCE CLOSE THE SESSION INFO PANEL AFTER CONNECTION IS ESTABLISHED
-    // We add a small delay to ensure UI updates are processed first
-    setTimeout(() => {
-        if (sessionInfoSection && !sessionInfoSection.classList.contains("collapsed")) {
-            sessionInfoSection.classList.add("collapsed");
-        }
-    }, 500);
+    // AUTO-CLOSE SESSION INFO TILE ON CONNECT (Both Host & Peer)
+    setTimeout(collapseSessionInfo, 500);
 
     if (isHost) {
       if (Object.keys(peerUsernames).length === 1) assignHostName();
@@ -500,8 +484,6 @@ async function setupConnHandlers(conn, pid, isIncoming) {
     }
   };
 
-  // Attach Open Handler (Robustly)
-  // If connection is already open (common in some PeerJS scenarios), fire immediately.
   if (conn.open) {
       onOpen();
   } else {
@@ -541,27 +523,35 @@ function tryConnectTo(pid, backoff = 1000) {
   const entry = mesh[pid] || (mesh[pid] = {});
   if (entry.status === "connected" || (entry.conn && entry.conn.open)) return;
 
-  // Watchdog: If we are stuck in 'connecting' for 15s, kill it and retry.
   if (entry.status === "connecting") {
-      // Already connecting, do nothing, let the existing watchdog handle it.
       return;
   }
 
-  console.log(`Attempting connection to ${pid}... (Backoff: ${backoff}ms)`);
+  console.log(`Attempting connection to ${pid}...`);
   entry.status = "connecting";
   updatePeersList();
 
-  const conn = peer.connect(pid, { reliable: true });
+  // EXPLICITLY PASS CONFIG TO CONNECT to ensure ICE servers are used
+  const conn = peer.connect(pid, {
+      reliable: true,
+      serialization: 'json', // Explicitly set to avoid defaults
+      ...PEER_CONFIG.config
+  });
   entry.conn = conn;
 
   // Set Watchdog
   entry.watchdogTimer = setTimeout(() => {
       if (entry.status === "connecting") {
-          console.warn(`Connection to ${pid} timed out (Watchdog). Retrying...`);
+          console.warn(`Connection to ${pid} timed out. Retrying...`);
           if (conn) conn.close();
           entry.status = "disconnected";
           updatePeersList();
           scheduleReconnect(pid);
+
+          // Notify user if it keeps failing
+          if (backoff > 4000) {
+              displayMessageBox("Connection Issue", "Struggling to connect. This is often due to strict firewalls (Symmetric NAT) on mobile networks. Try switching networks.");
+          }
       }
   }, CONNECTION_WATCHDOG_MS);
 
@@ -638,10 +628,8 @@ async function onDataReceived(data, fromPid, conn) {
     if (mesh[pid]) mesh[pid].status = 'disconnected';
     if (hostStatusOverrides) hostStatusOverrides[pid] = 'disconnected';
 
-    // Explicitly handle Host closure
     if (!isHost && pid === joinPeerId) {
         isHostSessionClosed = true;
-        // Optional: cancel pending reconnects
         if (mesh[pid] && mesh[pid].reconnectTimer) {
              clearTimeout(mesh[pid].reconnectTimer);
              mesh[pid].reconnectTimer = null;
@@ -709,7 +697,7 @@ startBtn.addEventListener("click", () => {
   peerUsernames = {};
   assignedNames = {};
   userCount = 0;
-  peer = new Peer(undefined, PEER_CONFIG); // Use robust config
+  peer = new Peer(undefined, PEER_CONFIG);
 
   peer.on("open", id => {
     myPeerId = id;
@@ -732,7 +720,6 @@ startBtn.addEventListener("click", () => {
     });
     peer.on("connection", conn => {
       const pid = conn.peer;
-      // Identify if this is a file transfer channel or main channel
       if (conn.metadata && conn.metadata.action === 'download') {
           handleFileDownloadConnection(conn);
       } else {
@@ -749,7 +736,7 @@ startBtn.addEventListener("click", () => {
 function joinMesh() {
   show(sessionInfoSection);
   sessionInfoSection.classList.remove("collapsed");
-  peer = new Peer(undefined, PEER_CONFIG); // Use robust config
+  peer = new Peer(undefined, PEER_CONFIG);
 
   peer.on("open", id => {
     myPeerId = id;
@@ -775,7 +762,6 @@ function joinMesh() {
   });
   peer.on("error", err => {
       console.error("PeerJS error:", err);
-      // If error is fatal/disconnect, try to reconnect to host
       if (err.type === 'peer-unavailable' || err.type === 'disconnected') {
            scheduleReconnect(joinPeerId);
       }
@@ -1017,8 +1003,6 @@ function handleFileDownloadConnection(conn) {
             let lastAckedChunkId = -1;
             let lastCheckedBufferedAmount = 0;
 
-            // Handle ACKs (Cumulative)
-            // Listen for control messages on this specific connection
             const ackListener = (msg) => {
                  if (msg.type === 'chunk-ack') {
                      lastAckedChunkId = Math.max(lastAckedChunkId, msg.chunkId);
@@ -1027,37 +1011,25 @@ function handleFileDownloadConnection(conn) {
                  }
             };
 
-            // We need a way to hook into the data listener we are currently in.
-            // Since PeerJS 'data' event is persistent, we can't easily add a second listener just for this scope.
-            // Instead, we will assume the client is sending ACKs and we check them.
-            // IMPORTANT: In this simplified "firehose" logic, we rely on the main listener for ACKs.
-            // BUT, this is a dedicated connection. So we can re-assign on('data')?
-            // PeerJS supports multiple listeners. Let's add one.
             conn.on('data', ackListener);
 
             try {
                 while (offset < file.size && !activeSender.canceled) {
-                    // 1. Backpressure Check
-                    if (conn.dataChannel.bufferedAmount > 8 * 1024 * 1024) { // 8MB buffer limit
+                    if (conn.dataChannel.bufferedAmount > 8 * 1024 * 1024) {
                         await new Promise(r => setTimeout(r, 50));
                         continue;
                     }
 
-                    // 2. Window Check
                     if (chunkId - lastAckedChunkId > MAX_WINDOW_SIZE) {
-                         // Too many un-acked chunks. Wait briefly.
                          await new Promise(r => setTimeout(r, 10));
                          continue;
                     }
 
-                    // 3. Read & Encrypt
                     const slice = file.slice(offset, offset + CHUNK_SIZE);
                     const chunkBuffer = await slice.arrayBuffer();
 
-                    // Encrypt
                     const { encryptedData, iv } = await encryptData(encryptionKey, chunkBuffer);
 
-                    // 4. Send
                     conn.send({
                         type: 'file-chunk',
                         chunkId: chunkId,
@@ -1077,10 +1049,9 @@ function handleFileDownloadConnection(conn) {
                 console.error("Send error:", err);
                 conn.send({ type: 'file-error', error: err.message });
             } finally {
-                // Cleanup
                 setTimeout(() => {
                     if (conn.open) conn.close();
-                }, 5000); // Give time for 'file-end' to arrive
+                }, 5000);
             }
         } else if (data && data.type === 'file-cancel') {
             activeSender.canceled = true;
@@ -1097,7 +1068,6 @@ async function startFileDownload(tile, fileMsgId) {
     return;
   }
 
-  // --- DUAL CHANNEL: Open separate connection for download ---
   const conn = peer.connect(fileMsg.senderId, {
       reliable: true,
       metadata: { action: 'download', fileMsgId: fileMsgId }
@@ -1118,7 +1088,6 @@ async function startFileDownload(tile, fileMsgId) {
       conn.send({ type: 'file-request', fileMsgId });
   });
 
-  // StreamSaver setup
   const fileStream = streamSaver.createWriteStream(fileMsg.fileName, { size: fileMsg.fileSize });
   const writer = fileStream.getWriter();
 
@@ -1131,7 +1100,6 @@ async function startFileDownload(tile, fileMsgId) {
 
       if (data.type === 'file-chunk') {
           try {
-              // Decrypt
               const iv = new Uint8Array(data.iv);
               const encrypted = new Uint8Array(data.data);
               const decrypted = await decryptData(encryptionKeys[fileMsgId], encrypted, iv);
@@ -1140,10 +1108,8 @@ async function startFileDownload(tile, fileMsgId) {
               receivedBytes += decrypted.byteLength;
               lastChunkId = data.chunkId;
 
-              // Update UI
               updateFileTileUI(tile, { status: 'downloading', progress: receivedBytes / expectedBytes });
 
-              // Cumulative ACK
               if (data.chunkId % ACK_INTERVAL === 0) {
                   conn.send({ type: 'chunk-ack', chunkId: data.chunkId });
               }
@@ -1153,7 +1119,6 @@ async function startFileDownload(tile, fileMsgId) {
               abortDownload("Write Error", 'error');
           }
       } else if (data.type === 'file-end') {
-          // Send final ACK
           conn.send({ type: 'chunk-ack', chunkId: lastChunkId });
           await writer.close();
           transferState.status = 'completed';
@@ -1179,7 +1144,6 @@ async function startFileDownload(tile, fileMsgId) {
       updateFileTileUI(tile, { status: 'canceled', error: msg, reason: reason });
   }
 
-  // Hook up cancel button logic
   transferState.cancel = () => {
       if (conn.open) conn.send({ type: 'file-cancel' });
       abortDownload('Canceled by you', 'user');
