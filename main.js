@@ -6,14 +6,16 @@
 
 // --------------- Configuration & Constants ---------------
 const PEER_CONFIG = {
-  debug: 1,
+  debug: 2, // 2 = Warnings & Errors (Helps debug connection issues)
+  secure: true, // CRITICAL for https:// hosting
   config: {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
       { urls: 'stun:stun2.l.google.com:19302' },
       { urls: 'stun:global.stun.twilio.com:3478' }
-    ]
+    ],
+    sdpSemantics: 'unified-plan' // Modern WebRTC standard
   }
 };
 
@@ -444,7 +446,8 @@ async function setupConnHandlers(conn, pid, isIncoming) {
       entry.watchdogTimer = null;
   }
 
-  conn.on("open", async () => {
+  // --- Logic to handle connection establishment ---
+  const onOpen = async () => {
     entry.status = "connected";
     entry.backoff = RECONNECT_BASE_DELAY; // Reset backoff
     if (entry.reconnectTimer) { clearTimeout(entry.reconnectTimer); entry.reconnectTimer = null; }
@@ -495,7 +498,15 @@ async function setupConnHandlers(conn, pid, isIncoming) {
         conn.send({ type: "username", username: myUsername, reqUserList: true });
       }
     }
-  });
+  };
+
+  // Attach Open Handler (Robustly)
+  // If connection is already open (common in some PeerJS scenarios), fire immediately.
+  if (conn.open) {
+      onOpen();
+  } else {
+      conn.on("open", onOpen);
+  }
 
   function handleDisconnect() {
     entry.status = "disconnected";
